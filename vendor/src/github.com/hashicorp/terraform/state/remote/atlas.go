@@ -3,14 +3,21 @@ package remote
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"strings"
+
+	"github.com/hashicorp/go-cleanhttp"
+	"github.com/hashicorp/go-retryablehttp"
+	"github.com/hashicorp/go-rootcerts"
+	"github.com/hashicorp/terraform/terraform"
 )
 
 const (
@@ -51,6 +58,11 @@ func atlasFactory(conf map[string]string) (Client, error) {
 		return nil, fmt.Errorf("malformed name '%s', expected format '<account>/<name>'", name)
 	}
 
+	// If it exists, add the `ATLAS_RUN_ID` environment
+	// variable as a param, which is injected during Atlas Terraform
+	// runs. This is completely optional.
+	client.RunId = os.Getenv("ATLAS_RUN_ID")
+
 	client.Server = server
 	client.ServerURL = url
 	client.AccessToken = token
@@ -67,17 +79,25 @@ type AtlasClient struct {
 	User        string
 	Name        string
 	AccessToken string
+	RunId       string
+	HTTPClient  *retryablehttp.Client
+
+	conflictHandlingAttempted bool
 }
 
 func (c *AtlasClient) Get() (*Payload, error) {
 	// Make the HTTP request
-	req, err := http.NewRequest("GET", c.url().String(), nil)
+	req, err := retryablehttp.NewRequest("GET", c.url().String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to make HTTP request: %v", err)
 	}
 
 	// Request the url
-	resp, err := http.DefaultClient.Do(req)
+	client, err := c.http()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -143,17 +163,8 @@ func (c *AtlasClient) Put(state []byte) error {
 	hash := md5.Sum(state)
 	b64 := base64.StdEncoding.EncodeToString(hash[:])
 
-	/*
-		// Set the force query parameter if needed
-		if force {
-			values := base.Query()
-			values.Set("force", "true")
-			base.RawQuery = values.Encode()
-		}
-	*/
-
 	// Make the HTTP client and request
-	req, err := http.NewRequest("PUT", base.String(), bytes.NewReader(state))
+	req, err := retryablehttp.NewRequest("PUT", base.String(), bytes.NewReader(state))
 	if err != nil {
 		return fmt.Errorf("Failed to make HTTP request: %v", err)
 	}
@@ -164,7 +175,11 @@ func (c *AtlasClient) Put(state []byte) error {
 	req.ContentLength = int64(len(state))
 
 	// Make the request
-	resp, err := http.DefaultClient.Do(req)
+	client, err := c.http()
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("Failed to upload state: %v", err)
 	}
@@ -174,6 +189,8 @@ func (c *AtlasClient) Put(state []byte) error {
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return nil
+	case http.StatusConflict:
+		return c.handleConflict(c.readBody(resp.Body), state)
 	default:
 		return fmt.Errorf(
 			"HTTP error: %d\n\nBody: %s",
@@ -183,13 +200,17 @@ func (c *AtlasClient) Put(state []byte) error {
 
 func (c *AtlasClient) Delete() error {
 	// Make the HTTP request
-	req, err := http.NewRequest("DELETE", c.url().String(), nil)
+	req, err := retryablehttp.NewRequest("DELETE", c.url().String(), nil)
 	if err != nil {
 		return fmt.Errorf("Failed to make HTTP request: %v", err)
 	}
 
 	// Make the request
-	resp, err := http.DefaultClient.Do(req)
+	client, err := c.http()
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("Failed to delete state: %v", err)
 	}
@@ -208,8 +229,6 @@ func (c *AtlasClient) Delete() error {
 			"HTTP error: %d\n\nBody: %s",
 			resp.StatusCode, c.readBody(resp.Body))
 	}
-
-	return fmt.Errorf("Unexpected HTTP response code %d", resp.StatusCode)
 }
 
 func (c *AtlasClient) readBody(b io.Reader) string {
@@ -227,10 +246,99 @@ func (c *AtlasClient) readBody(b io.Reader) string {
 }
 
 func (c *AtlasClient) url() *url.URL {
+	values := url.Values{}
+
+	values.Add("atlas_run_id", c.RunId)
+	values.Add("access_token", c.AccessToken)
+
 	return &url.URL{
 		Scheme:   c.ServerURL.Scheme,
 		Host:     c.ServerURL.Host,
 		Path:     path.Join("api/v1/terraform/state", c.User, c.Name),
-		RawQuery: fmt.Sprintf("access_token=%s", c.AccessToken),
+		RawQuery: values.Encode(),
 	}
+}
+
+func (c *AtlasClient) http() (*retryablehttp.Client, error) {
+	if c.HTTPClient != nil {
+		return c.HTTPClient, nil
+	}
+	tlsConfig := &tls.Config{}
+	err := rootcerts.ConfigureTLS(tlsConfig, &rootcerts.Config{
+		CAFile: os.Getenv("ATLAS_CAFILE"),
+		CAPath: os.Getenv("ATLAS_CAPATH"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rc := retryablehttp.NewClient()
+	t := cleanhttp.DefaultTransport()
+	t.TLSClientConfig = tlsConfig
+	rc.HTTPClient.Transport = t
+	return rc, nil
+}
+
+// Atlas returns an HTTP 409 - Conflict if the pushed state reports the same
+// Serial number but the checksum of the raw content differs. This can
+// sometimes happen when Terraform changes state representation internally
+// between versions in a way that's semantically neutral but affects the JSON
+// output and therefore the checksum.
+//
+// Here we detect and handle this situation by ticking the serial and retrying
+// iff for the previous state and the proposed state:
+//
+//   * the serials match
+//   * the parsed states are Equal (semantically equivalent)
+//
+// In other words, in this situation Terraform can override Atlas's detected
+// conflict by asserting that the state it is pushing is indeed correct.
+func (c *AtlasClient) handleConflict(msg string, state []byte) error {
+	log.Printf("[DEBUG] Handling Atlas conflict response: %s", msg)
+
+	if c.conflictHandlingAttempted {
+		log.Printf("[DEBUG] Already attempted conflict resolution; returning conflict.")
+	} else {
+		c.conflictHandlingAttempted = true
+		log.Printf("[DEBUG] Atlas reported conflict, checking for equivalent states.")
+
+		payload, err := c.Get()
+		if err != nil {
+			return conflictHandlingError(err)
+		}
+
+		currentState, err := terraform.ReadState(bytes.NewReader(payload.Data))
+		if err != nil {
+			return conflictHandlingError(err)
+		}
+
+		proposedState, err := terraform.ReadState(bytes.NewReader(state))
+		if err != nil {
+			return conflictHandlingError(err)
+		}
+
+		if statesAreEquivalent(currentState, proposedState) {
+			log.Printf("[DEBUG] States are equivalent, incrementing serial and retrying.")
+			proposedState.Serial++
+			var buf bytes.Buffer
+			if err := terraform.WriteState(proposedState, &buf); err != nil {
+				return conflictHandlingError(err)
+
+			}
+			return c.Put(buf.Bytes())
+		} else {
+			log.Printf("[DEBUG] States are not equivalent, returning conflict.")
+		}
+	}
+
+	return fmt.Errorf(
+		"Atlas detected a remote state conflict.\n\nMessage: %s", msg)
+}
+
+func conflictHandlingError(err error) error {
+	return fmt.Errorf(
+		"Error while handling a conflict response from Atlas: %s", err)
+}
+
+func statesAreEquivalent(current, proposed *terraform.State) bool {
+	return current.Serial == proposed.Serial && current.Equal(proposed)
 }

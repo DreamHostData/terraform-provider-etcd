@@ -3,7 +3,6 @@ package google
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"google.golang.org/api/compute/v1"
@@ -18,6 +17,24 @@ func resourceComputeForwardingRule() *schema.Resource {
 		Update: resourceComputeForwardingRuleUpdate,
 
 		Schema: map[string]*schema.Schema{
+			"name": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
+			},
+
+			"target": &schema.Schema{
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: false,
+			},
+
+			"description": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"ip_address": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
@@ -32,19 +49,19 @@ func resourceComputeForwardingRule() *schema.Resource {
 				Computed: true,
 			},
 
-			"description": &schema.Schema{
+			"port_range": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
 
-			"name": &schema.Schema{
+			"project": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 				ForceNew: true,
 			},
 
-			"port_range": &schema.Schema{
+			"region": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -54,18 +71,22 @@ func resourceComputeForwardingRule() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-
-			"target": &schema.Schema{
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: false,
-			},
 		},
 	}
 }
 
 func resourceComputeForwardingRuleCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
+
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
 
 	frule := &compute.ForwardingRule{
 		IPAddress:   d.Get("ip_address").(string),
@@ -78,7 +99,7 @@ func resourceComputeForwardingRuleCreate(d *schema.ResourceData, meta interface{
 
 	log.Printf("[DEBUG] ForwardingRule insert request: %#v", frule)
 	op, err := config.clientCompute.ForwardingRules.Insert(
-		config.Project, config.Region, frule).Do()
+		project, region, frule).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating ForwardingRule: %s", err)
 	}
@@ -86,28 +107,9 @@ func resourceComputeForwardingRuleCreate(d *schema.ResourceData, meta interface{
 	// It probably maybe worked, so store the ID now
 	d.SetId(frule.Name)
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Region:  config.Region,
-		Project: config.Project,
-		Type:    OperationWaitRegion,
-	}
-	state := w.Conf()
-	state.Timeout = 2 * time.Minute
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	err = computeOperationWaitRegion(config, op, region, "Creating Fowarding Rule")
 	if err != nil {
-		return fmt.Errorf("Error waiting for ForwardingRule to create: %s", err)
-	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// The resource didn't actually create
-		d.SetId("")
-
-		// Return the error
-		return OperationError(*op.Error)
+		return err
 	}
 
 	return resourceComputeForwardingRuleRead(d, meta)
@@ -116,40 +118,32 @@ func resourceComputeForwardingRuleCreate(d *schema.ResourceData, meta interface{
 func resourceComputeForwardingRuleUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	d.Partial(true)
 
 	if d.HasChange("target") {
 		target_name := d.Get("target").(string)
 		target_ref := &compute.TargetReference{Target: target_name}
 		op, err := config.clientCompute.ForwardingRules.SetTarget(
-			config.Project, config.Region, d.Id(), target_ref).Do()
+			project, region, d.Id(), target_ref).Do()
 		if err != nil {
 			return fmt.Errorf("Error updating target: %s", err)
 		}
 
-		// Wait for the operation to complete
-		w := &OperationWaiter{
-			Service: config.clientCompute,
-			Op:      op,
-			Region:  config.Region,
-			Project: config.Project,
-			Type:    OperationWaitRegion,
-		}
-		state := w.Conf()
-		state.Timeout = 2 * time.Minute
-		state.MinTimeout = 1 * time.Second
-		opRaw, err := state.WaitForState()
+		err = computeOperationWaitRegion(config, op, region, "Updating Forwarding Rule")
 		if err != nil {
-			return fmt.Errorf("Error waiting for ForwardingRule to update target: %s", err)
+			return err
 		}
-		op = opRaw.(*compute.Operation)
-		if op.Error != nil {
-			// The resource didn't actually create
-			d.SetId("")
 
-			// Return the error
-			return OperationError(*op.Error)
-		}
 		d.SetPartial("target")
 	}
 
@@ -161,10 +155,21 @@ func resourceComputeForwardingRuleUpdate(d *schema.ResourceData, meta interface{
 func resourceComputeForwardingRuleRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	frule, err := config.clientCompute.ForwardingRules.Get(
-		config.Project, config.Region, d.Id()).Do()
+		project, region, d.Id()).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
+			log.Printf("[WARN] Removing Forwarding Rule %q because it's gone", d.Get("name").(string))
 			// The resource doesn't exist anymore
 			d.SetId("")
 
@@ -184,33 +189,27 @@ func resourceComputeForwardingRuleRead(d *schema.ResourceData, meta interface{})
 func resourceComputeForwardingRuleDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Delete the ForwardingRule
 	log.Printf("[DEBUG] ForwardingRule delete request")
 	op, err := config.clientCompute.ForwardingRules.Delete(
-		config.Project, config.Region, d.Id()).Do()
+		project, region, d.Id()).Do()
 	if err != nil {
 		return fmt.Errorf("Error deleting ForwardingRule: %s", err)
 	}
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Region:  config.Region,
-		Project: config.Project,
-		Type:    OperationWaitRegion,
-	}
-	state := w.Conf()
-	state.Timeout = 2 * time.Minute
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	err = computeOperationWaitRegion(config, op, region, "Deleting Forwarding Rule")
 	if err != nil {
-		return fmt.Errorf("Error waiting for ForwardingRule to delete: %s", err)
-	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// Return the error
-		return OperationError(*op.Error)
+		return err
 	}
 
 	d.SetId("")

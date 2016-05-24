@@ -21,10 +21,11 @@ func init() {
 // Plan represents a single Terraform execution plan, which contains
 // all the information necessary to make an infrastructure change.
 type Plan struct {
-	Diff   *Diff
-	Module *module.Tree
-	State  *State
-	Vars   map[string]string
+	Diff    *Diff
+	Module  *module.Tree
+	State   *State
+	Vars    map[string]string
+	Targets []string
 
 	once sync.Once
 }
@@ -33,11 +34,12 @@ type Plan struct {
 //
 // The following fields in opts are overridden by the plan: Config,
 // Diff, State, Variables.
-func (p *Plan) Context(opts *ContextOpts) *Context {
+func (p *Plan) Context(opts *ContextOpts) (*Context, error) {
 	opts.Diff = p.Diff
 	opts.Module = p.Module
 	opts.State = p.State
 	opts.Variables = p.Vars
+	opts.Targets = p.Targets
 	return NewContext(opts)
 }
 

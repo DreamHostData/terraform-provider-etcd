@@ -4,9 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/hashicorp/hil/ast"
 	"github.com/hashicorp/terraform/config"
-	"github.com/hashicorp/terraform/config/lang/ast"
-	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/terraform"
 )
 
@@ -122,7 +121,7 @@ func TestConfigFieldReader_DefaultHandling(t *testing.T) {
 			Config: tc.Config,
 		}
 		out, err := r.ReadField(tc.Addr)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("%s: err: %s", name, err)
 		}
 		if s, ok := out.Value.(*Set); ok {
@@ -184,6 +183,36 @@ func TestConfigFieldReader_ComputedMap(t *testing.T) {
 			}),
 			false,
 		},
+
+		"native map": {
+			[]string{"map"},
+			FieldReadResult{
+				Value: map[string]interface{}{
+					"bar": "baz",
+					"baz": "bar",
+				},
+				Exists:   true,
+				Computed: false,
+			},
+			testConfigInterpolate(t, map[string]interface{}{
+				"map": "${var.foo}",
+			}, map[string]ast.Variable{
+				"var.foo": ast.Variable{
+					Type: ast.TypeMap,
+					Value: map[string]ast.Variable{
+						"bar": ast.Variable{
+							Type:  ast.TypeString,
+							Value: "baz",
+						},
+						"baz": ast.Variable{
+							Type:  ast.TypeString,
+							Value: "bar",
+						},
+					},
+				},
+			}),
+			false,
+		},
 	}
 
 	for name, tc := range cases {
@@ -192,7 +221,7 @@ func TestConfigFieldReader_ComputedMap(t *testing.T) {
 			Config: tc.Config,
 		}
 		out, err := r.ReadField(tc.Addr)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("%s: err: %s", name, err)
 		}
 		if s, ok := out.Value.(*Set); ok {
@@ -213,9 +242,7 @@ func TestConfigFieldReader_ComputedSet(t *testing.T) {
 		"strSet": &Schema{
 			Type: TypeSet,
 			Elem: &Schema{Type: TypeString},
-			Set: func(v interface{}) int {
-				return hashcode.String(v.(string))
-			},
+			Set:  HashString,
 		},
 	}
 
@@ -228,8 +255,8 @@ func TestConfigFieldReader_ComputedSet(t *testing.T) {
 		"set, normal": {
 			[]string{"strSet"},
 			FieldReadResult{
-				Value: map[int]interface{}{
-					2356372769: "foo",
+				Value: map[string]interface{}{
+					"2356372769": "foo",
 				},
 				Exists:   true,
 				Computed: false,
@@ -283,7 +310,7 @@ func TestConfigFieldReader_ComputedSet(t *testing.T) {
 			Config: tc.Config,
 		}
 		out, err := r.ReadField(tc.Addr)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("%s: err: %s", name, err)
 		}
 		if s, ok := out.Value.(*Set); ok {
@@ -308,6 +335,7 @@ func testConfigInterpolate(
 	t *testing.T,
 	raw map[string]interface{},
 	vs map[string]ast.Variable) *terraform.ResourceConfig {
+
 	rc, err := config.NewRawConfig(raw)
 	if err != nil {
 		t.Fatalf("err: %s", err)

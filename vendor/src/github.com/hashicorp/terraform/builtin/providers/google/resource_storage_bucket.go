@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform/helper/schema"
 
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/storage/v1"
 )
 
@@ -23,22 +24,53 @@ func resourceStorageBucket() *schema.Resource {
 				Required: true,
 				ForceNew: true,
 			},
-			"predefined_acl": &schema.Schema{
-				Type:     schema.TypeString,
-				Default:  "projectPrivate",
+
+			"force_destroy": &schema.Schema{
+				Type:     schema.TypeBool,
 				Optional: true,
-				ForceNew: true,
+				Default:  false,
 			},
+
 			"location": &schema.Schema{
 				Type:     schema.TypeString,
 				Default:  "US",
 				Optional: true,
 				ForceNew: true,
 			},
-			"force_destroy": &schema.Schema{
-				Type:     schema.TypeBool,
+
+			"predefined_acl": &schema.Schema{
+				Type:       schema.TypeString,
+				Deprecated: "Please use resource \"storage_bucket_acl.predefined_acl\" instead.",
+				Optional:   true,
+				ForceNew:   true,
+			},
+
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
 				Optional: true,
-				Default:  false,
+				ForceNew: true,
+			},
+
+			"self_link": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"website": &schema.Schema{
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"main_page_suffix": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"not_found_page": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -47,14 +79,44 @@ func resourceStorageBucket() *schema.Resource {
 func resourceStorageBucketCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Get the bucket and acl
 	bucket := d.Get("name").(string)
-	acl := d.Get("predefined_acl").(string)
 	location := d.Get("location").(string)
 
 	// Create a bucket, setting the acl, location and name.
 	sb := &storage.Bucket{Name: bucket, Location: location}
-	res, err := config.clientStorage.Buckets.Insert(config.Project, sb).PredefinedAcl(acl).Do()
+
+	if v, ok := d.GetOk("website"); ok {
+		websites := v.([]interface{})
+
+		if len(websites) > 1 {
+			return fmt.Errorf("At most one website block is allowed")
+		}
+
+		sb.Website = &storage.BucketWebsite{}
+
+		website := websites[0].(map[string]interface{})
+
+		if v, ok := website["not_found_page"]; ok {
+			sb.Website.NotFoundPage = v.(string)
+		}
+
+		if v, ok := website["main_page_suffix"]; ok {
+			sb.Website.MainPageSuffix = v.(string)
+		}
+	}
+
+	call := config.clientStorage.Buckets.Insert(project, sb)
+	if v, ok := d.GetOk("predefined_acl"); ok {
+		call = call.PredefinedAcl(v.(string))
+	}
+
+	res, err := call.Do()
 
 	if err != nil {
 		fmt.Printf("Error creating bucket %s: %v", bucket, err)
@@ -64,14 +126,60 @@ func resourceStorageBucketCreate(d *schema.ResourceData, meta interface{}) error
 	log.Printf("[DEBUG] Created bucket %v at location %v\n\n", res.Name, res.SelfLink)
 
 	// Assign the bucket ID as the resource ID
+	d.Set("self_link", res.SelfLink)
 	d.SetId(res.Id)
 
 	return nil
 }
 
 func resourceStorageBucketUpdate(d *schema.ResourceData, meta interface{}) error {
-	// Only thing you can currently change is force_delete (all other properties have ForceNew)
-	// which is just terraform object state change, so nothing to do here
+	config := meta.(*Config)
+
+	sb := &storage.Bucket{}
+
+	if d.HasChange("website") {
+		if v, ok := d.GetOk("website"); ok {
+			websites := v.([]interface{})
+
+			if len(websites) > 1 {
+				return fmt.Errorf("At most one website block is allowed")
+			}
+
+			// Setting fields to "" to be explicit that the PATCH call will
+			// delete this field.
+			if len(websites) == 0 {
+				sb.Website.NotFoundPage = ""
+				sb.Website.MainPageSuffix = ""
+			} else {
+				website := websites[0].(map[string]interface{})
+				sb.Website = &storage.BucketWebsite{}
+				if v, ok := website["not_found_page"]; ok {
+					sb.Website.NotFoundPage = v.(string)
+				} else {
+					sb.Website.NotFoundPage = ""
+				}
+
+				if v, ok := website["main_page_suffix"]; ok {
+					sb.Website.MainPageSuffix = v.(string)
+				} else {
+					sb.Website.MainPageSuffix = ""
+				}
+			}
+		}
+	}
+
+	res, err := config.clientStorage.Buckets.Patch(d.Get("name").(string), sb).Do()
+
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[DEBUG] Patched bucket %v at location %v\n\n", res.Name, res.SelfLink)
+
+	// Assign the bucket ID as the resource ID
+	d.Set("self_link", res.SelfLink)
+	d.SetId(res.Id)
+
 	return nil
 }
 
@@ -83,13 +191,21 @@ func resourceStorageBucketRead(d *schema.ResourceData, meta interface{}) error {
 	res, err := config.clientStorage.Buckets.Get(bucket).Do()
 
 	if err != nil {
-		fmt.Printf("Error reading bucket %s: %v", bucket, err)
-		return err
+		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
+			log.Printf("[WARN] Removing Bucket %q because it's gone", d.Get("name").(string))
+			// The resource doesn't exist anymore
+			d.SetId("")
+
+			return nil
+		}
+
+		return fmt.Errorf("Error reading bucket %s: %v", bucket, err)
 	}
 
 	log.Printf("[DEBUG] Read bucket %v at location %v\n\n", res.Name, res.SelfLink)
 
 	// Update the bucket ID according to the resource ID
+	d.Set("self_link", res.SelfLink)
 	d.SetId(res.Id)
 
 	return nil

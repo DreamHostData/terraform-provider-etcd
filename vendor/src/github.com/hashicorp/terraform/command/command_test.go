@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -52,13 +53,28 @@ func testCtxConfig(p terraform.ResourceProvider) *terraform.ContextOpts {
 	}
 }
 
+func testCtxConfigWithShell(p terraform.ResourceProvider, pr terraform.ResourceProvisioner) *terraform.ContextOpts {
+	return &terraform.ContextOpts{
+		Providers: map[string]terraform.ResourceProviderFactory{
+			"test": func() (terraform.ResourceProvider, error) {
+				return p, nil
+			},
+		},
+		Provisioners: map[string]terraform.ResourceProvisionerFactory{
+			"shell": func() (terraform.ResourceProvisioner, error) {
+				return pr, nil
+			},
+		},
+	}
+}
+
 func testModule(t *testing.T, name string) *module.Tree {
 	mod, err := module.NewTreeModule("", filepath.Join(fixtureDir, name))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
-	s := &module.FolderStorage{StorageDir: tempDir(t)}
+	s := &getter.FolderStorage{StorageDir: tempDir(t)}
 	if err := mod.Load(s, module.GetModeGet); err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -100,6 +116,7 @@ func testReadPlan(t *testing.T, path string) *terraform.Plan {
 // testState returns a test State structure that we use for a lot of tests.
 func testState() *terraform.State {
 	return &terraform.State{
+		Version: 2,
 		Modules: []*terraform.ModuleState{
 			&terraform.ModuleState{
 				Path: []string{"root"},
@@ -186,7 +203,7 @@ func testStateOutput(t *testing.T, path string, expected string) {
 	actual := strings.TrimSpace(newState.String())
 	expected = strings.TrimSpace(expected)
 	if actual != expected {
-		t.Fatalf("bad:\n\n%s", actual)
+		t.Fatalf("expected:\n%s\nactual:\n%s", expected, actual)
 	}
 }
 
@@ -208,21 +225,7 @@ func testProvider() *terraform.MockResourceProvider {
 }
 
 func testTempFile(t *testing.T) string {
-	tf, err := ioutil.TempFile("", "tf")
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-
-	result := tf.Name()
-
-	if err := tf.Close(); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	if err := os.Remove(result); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-
-	return result
+	return filepath.Join(testTempDir(t), "state.tfstate")
 }
 
 func testTempDir(t *testing.T) string {

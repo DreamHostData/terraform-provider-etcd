@@ -15,14 +15,15 @@ var websiteEndpoints = []struct {
 	{"ap-southeast-1", "bucket-name.s3-website-ap-southeast-1.amazonaws.com"},
 	{"ap-northeast-1", "bucket-name.s3-website-ap-northeast-1.amazonaws.com"},
 	{"ap-southeast-2", "bucket-name.s3-website-ap-southeast-2.amazonaws.com"},
+	{"ap-northeast-2", "bucket-name.s3-website-ap-northeast-2.amazonaws.com"},
 	{"sa-east-1", "bucket-name.s3-website-sa-east-1.amazonaws.com"},
 }
 
 func TestWebsiteEndpointUrl(t *testing.T) {
 	for _, tt := range websiteEndpoints {
-		s := WebsiteEndpointUrl("bucket-name", tt.in)
-		if s != tt.out {
-			t.Errorf("WebsiteEndpointUrl(\"bucket-name\", %q) => %q, want %q", tt.in, s, tt.out)
+		s := WebsiteEndpoint("bucket-name", tt.in)
+		if s.Endpoint != tt.out {
+			t.Errorf("WebsiteEndpointUrl(\"bucket-name\", %q) => %q, want %q", tt.in, s.Endpoint, tt.out)
 		}
 	}
 }

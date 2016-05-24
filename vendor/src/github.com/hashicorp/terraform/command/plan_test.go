@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -88,7 +89,7 @@ func TestPlan_destroy(t *testing.T) {
 		}
 	}
 
-	f, err := os.Open(statePath + DefaultBackupExtention)
+	f, err := os.Open(statePath + DefaultBackupExtension)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -107,6 +108,9 @@ func TestPlan_destroy(t *testing.T) {
 }
 
 func TestPlan_noState(t *testing.T) {
+	tmp, cwd := testCwd(t)
+	defer testFixCwd(t, tmp, cwd)
+
 	p := testProvider()
 	ui := new(cli.MockUi)
 	c := &PlanCommand{
@@ -173,6 +177,55 @@ func TestPlan_outPath(t *testing.T) {
 
 	if _, err := terraform.ReadPlan(f); err != nil {
 		t.Fatalf("err: %s", err)
+	}
+}
+
+func TestPlan_outPathNoChange(t *testing.T) {
+	originalState := &terraform.State{
+		Modules: []*terraform.ModuleState{
+			&terraform.ModuleState{
+				Path: []string{"root"},
+				Resources: map[string]*terraform.ResourceState{
+					"test_instance.foo": &terraform.ResourceState{
+						Type: "test_instance",
+						Primary: &terraform.InstanceState{
+							ID: "bar",
+						},
+					},
+				},
+			},
+		},
+	}
+	statePath := testStateFile(t, originalState)
+
+	tf, err := ioutil.TempFile("", "tf")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	outPath := tf.Name()
+	os.Remove(tf.Name())
+
+	p := testProvider()
+	ui := new(cli.MockUi)
+	c := &PlanCommand{
+		Meta: Meta{
+			ContextOpts: testCtxConfig(p),
+			Ui:          ui,
+		},
+	}
+
+	args := []string{
+		"-out", outPath,
+		"-state", statePath,
+		testFixturePath("plan"),
+	}
+	if code := c.Run(args); code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter.String())
+	}
+
+	plan := testReadPlan(t, outPath)
+	if !plan.Diff.Empty() {
+		t.Fatalf("Expected empty plan to be written to plan file, got: %s", plan)
 	}
 }
 
@@ -295,6 +348,70 @@ func TestPlan_stateDefault(t *testing.T) {
 	}
 }
 
+func TestPlan_stateFuture(t *testing.T) {
+	originalState := testState()
+	originalState.TFVersion = "99.99.99"
+	statePath := testStateFile(t, originalState)
+
+	p := testProvider()
+	ui := new(cli.MockUi)
+	c := &PlanCommand{
+		Meta: Meta{
+			ContextOpts: testCtxConfig(p),
+			Ui:          ui,
+		},
+	}
+
+	args := []string{
+		"-state", statePath,
+		testFixturePath("plan"),
+	}
+	if code := c.Run(args); code == 0 {
+		t.Fatal("should fail")
+	}
+
+	f, err := os.Open(statePath)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	newState, err := terraform.ReadState(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !newState.Equal(originalState) {
+		t.Fatalf("bad: %#v", newState)
+	}
+	if newState.TFVersion != originalState.TFVersion {
+		t.Fatalf("bad: %#v", newState)
+	}
+}
+
+func TestPlan_statePast(t *testing.T) {
+	originalState := testState()
+	originalState.TFVersion = "0.1.0"
+	statePath := testStateFile(t, originalState)
+
+	p := testProvider()
+	ui := new(cli.MockUi)
+	c := &PlanCommand{
+		Meta: Meta{
+			ContextOpts: testCtxConfig(p),
+			Ui:          ui,
+		},
+	}
+
+	args := []string{
+		"-state", statePath,
+		testFixturePath("plan"),
+	}
+	if code := c.Run(args); code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter.String())
+	}
+}
+
 func TestPlan_vars(t *testing.T) {
 	p := testProvider()
 	ui := new(cli.MockUi)
@@ -327,6 +444,30 @@ func TestPlan_vars(t *testing.T) {
 
 	if actual != "bar" {
 		t.Fatal("didn't work")
+	}
+}
+
+func TestPlan_varsUnset(t *testing.T) {
+	// Disable test mode so input would be asked
+	test = false
+	defer func() { test = true }()
+
+	defaultInputReader = bytes.NewBufferString("bar\n")
+
+	p := testProvider()
+	ui := new(cli.MockUi)
+	c := &PlanCommand{
+		Meta: Meta{
+			ContextOpts: testCtxConfig(p),
+			Ui:          ui,
+		},
+	}
+
+	args := []string{
+		testFixturePath("plan-vars"),
+	}
+	if code := c.Run(args); code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter.String())
 	}
 }
 
@@ -561,7 +702,7 @@ func TestPlan_disableBackup(t *testing.T) {
 	}
 
 	// Ensure there is no backup
-	_, err = os.Stat(statePath + DefaultBackupExtention)
+	_, err = os.Stat(statePath + DefaultBackupExtension)
 	if err == nil || !os.IsNotExist(err) {
 		t.Fatalf("backup should not exist")
 	}

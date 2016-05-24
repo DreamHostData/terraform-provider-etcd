@@ -5,7 +5,6 @@ import (
 	"regexp"
 
 	"github.com/hashicorp/atlas-go/v1"
-	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 )
 
@@ -19,7 +18,6 @@ func resourceArtifact() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceArtifactRead,
 		Read:   resourceArtifactRead,
-		Update: resourceArtifactRead,
 		Delete: resourceArtifactDelete,
 
 		Schema: map[string]*schema.Schema{
@@ -52,9 +50,7 @@ func resourceArtifact() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 
 			"metadata": &schema.Schema{

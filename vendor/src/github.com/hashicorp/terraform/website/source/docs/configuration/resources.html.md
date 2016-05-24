@@ -25,8 +25,8 @@ A resource configuration looks like the following:
 
 ```
 resource "aws_instance" "web" {
-    ami = "ami-123456"
-    instance_type = "m1.small"
+    ami = "ami-408c7f28"
+    instance_type = "t1.micro"
 }
 ```
 
@@ -67,6 +67,22 @@ The `lifecycle` block allows the following keys to be set:
   * `prevent_destroy` (bool) - This flag provides extra protection against the
       destruction of a given resource. When this is set to `true`, any plan
       that includes a destroy of this resource will return an error message.
+
+<a id="ignore-changes"></a>
+
+  * `ignore_changes` (list of strings) - Customizes how diffs are evaluated for
+      resources, allowing individual attributes to be ignored through changes.
+      As an example, this can be used to ignore dynamic changes to the
+      resource from external resources. Other meta-parameters cannot be ignored.
+
+~> **NOTE on create\_before\_destroy and dependencies:** Resources that utilize
+the `create_before_destroy` key can only depend on other resources that also
+include `create_before_destroy`. Referencing a resource that does not include
+`create_before_destroy` will result in a dependency graph cycle. 
+
+~> **NOTE on ignore\_changes:** Ignored attribute names can be matched by their
+name, not state ID. For example, if an `aws_route_table` has two routes defined
+and the `ignore_changes` list contains "route", both routes will be ignored.
 
 -------------
 
@@ -129,7 +145,7 @@ resource "aws_instance" "app" {
 
 ## Multiple Provider Instances
 
-By default, a resource targets the resource based on its type. For example
+By default, a resource targets the provider based on its type. For example
 an `aws_instance` resource will target the "aws" provider. As of Terraform
 0.5.0, a resource can target any provider by name.
 
@@ -186,6 +202,8 @@ where `LIFECYCLE` is:
 ```
 lifecycle {
     [create_before_destroy = true|false]
+    [prevent_destroy = true|false]
+    [ignore_changes = [ATTRIBUTE NAME, ...]]
 }
 ```
 

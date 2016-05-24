@@ -19,6 +19,9 @@ func resourceAwsEbsVolume() *schema.Resource {
 		Read:   resourceAwsEbsVolumeRead,
 		Update: resourceAWSEbsVolumeUpdate,
 		Delete: resourceAwsEbsVolumeDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"availability_zone": &schema.Schema{
@@ -74,37 +77,51 @@ func resourceAwsEbsVolumeCreate(d *schema.ResourceData, meta interface{}) error 
 		AvailabilityZone: aws.String(d.Get("availability_zone").(string)),
 	}
 	if value, ok := d.GetOk("encrypted"); ok {
-		request.Encrypted = aws.Boolean(value.(bool))
-	}
-	if value, ok := d.GetOk("iops"); ok {
-		request.IOPS = aws.Long(int64(value.(int)))
+		request.Encrypted = aws.Bool(value.(bool))
 	}
 	if value, ok := d.GetOk("kms_key_id"); ok {
-		request.KMSKeyID = aws.String(value.(string))
+		request.KmsKeyId = aws.String(value.(string))
 	}
 	if value, ok := d.GetOk("size"); ok {
-		request.Size = aws.Long(int64(value.(int)))
+		request.Size = aws.Int64(int64(value.(int)))
 	}
 	if value, ok := d.GetOk("snapshot_id"); ok {
-		request.SnapshotID = aws.String(value.(string))
-	}
-	if value, ok := d.GetOk("type"); ok {
-		request.VolumeType = aws.String(value.(string))
+		request.SnapshotId = aws.String(value.(string))
 	}
 
+	// IOPs are only valid, and required for, storage type io1. The current minimu
+	// is 100. Instead of a hard validation we we only apply the IOPs to the
+	// request if the type is io1, and log a warning otherwise. This allows users
+	// to "disable" iops. See https://github.com/hashicorp/terraform/pull/4146
+	var t string
+	if value, ok := d.GetOk("type"); ok {
+		t = value.(string)
+		request.VolumeType = aws.String(t)
+	}
+
+	iops := d.Get("iops").(int)
+	if t != "io1" && iops > 0 {
+		log.Printf("[WARN] IOPs is only valid for storate type io1 for EBS Volumes")
+	} else if t == "io1" {
+		// We add the iops value without validating it's size, to allow AWS to
+		// enforce a size requirement (currently 100)
+		request.Iops = aws.Int64(int64(iops))
+	}
+
+	log.Printf(
+		"[DEBUG] EBS Volume create opts: %s", request)
 	result, err := conn.CreateVolume(request)
 	if err != nil {
 		return fmt.Errorf("Error creating EC2 volume: %s", err)
 	}
 
-	log.Printf(
-		"[DEBUG] Waiting for Volume (%s) to become available",
-		d.Id())
+	log.Println(
+		"[DEBUG] Waiting for Volume to become available")
 
 	stateConf := &resource.StateChangeConf{
 		Pending:    []string{"creating"},
-		Target:     "available",
-		Refresh:    volumeStateRefreshFunc(conn, *result.VolumeID),
+		Target:     []string{"available"},
+		Refresh:    volumeStateRefreshFunc(conn, *result.VolumeId),
 		Timeout:    5 * time.Minute,
 		Delay:      10 * time.Second,
 		MinTimeout: 3 * time.Second,
@@ -114,10 +131,10 @@ func resourceAwsEbsVolumeCreate(d *schema.ResourceData, meta interface{}) error 
 	if err != nil {
 		return fmt.Errorf(
 			"Error waiting for Volume (%s) to become available: %s",
-			*result.VolumeID, err)
+			*result.VolumeId, err)
 	}
 
-	d.SetId(*result.VolumeID)
+	d.SetId(*result.VolumeId)
 
 	if _, ok := d.GetOk("tags"); ok {
 		setTags(conn, d)
@@ -139,7 +156,7 @@ func resourceAWSEbsVolumeUpdate(d *schema.ResourceData, meta interface{}) error 
 func volumeStateRefreshFunc(conn *ec2.EC2, volumeID string) resource.StateRefreshFunc {
 	return func() (interface{}, string, error) {
 		resp, err := conn.DescribeVolumes(&ec2.DescribeVolumesInput{
-			VolumeIDs: []*string{aws.String(volumeID)},
+			VolumeIds: []*string{aws.String(volumeID)},
 		})
 
 		if err != nil {
@@ -163,7 +180,7 @@ func resourceAwsEbsVolumeRead(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
 	request := &ec2.DescribeVolumesInput{
-		VolumeIDs: []*string{aws.String(d.Id())},
+		VolumeIds: []*string{aws.String(d.Id())},
 	}
 
 	response, err := conn.DescribeVolumes(request)
@@ -172,7 +189,7 @@ func resourceAwsEbsVolumeRead(d *schema.ResourceData, meta interface{}) error {
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("Error reading EC2 volume %s: %#v", d.Id(), err)
+		return fmt.Errorf("Error reading EC2 volume %s: %s", d.Id(), err)
 	}
 
 	return readVolume(d, response.Volumes[0])
@@ -182,7 +199,7 @@ func resourceAwsEbsVolumeDelete(d *schema.ResourceData, meta interface{}) error 
 	conn := meta.(*AWSClient).ec2conn
 
 	request := &ec2.DeleteVolumeInput{
-		VolumeID: aws.String(d.Id()),
+		VolumeId: aws.String(d.Id()),
 	}
 
 	_, err := conn.DeleteVolume(request)
@@ -193,27 +210,35 @@ func resourceAwsEbsVolumeDelete(d *schema.ResourceData, meta interface{}) error 
 }
 
 func readVolume(d *schema.ResourceData, volume *ec2.Volume) error {
-	d.SetId(*volume.VolumeID)
+	d.SetId(*volume.VolumeId)
 
 	d.Set("availability_zone", *volume.AvailabilityZone)
 	if volume.Encrypted != nil {
 		d.Set("encrypted", *volume.Encrypted)
 	}
-	if volume.IOPS != nil {
-		d.Set("iops", *volume.IOPS)
-	}
-	if volume.KMSKeyID != nil {
-		d.Set("kms_key_id", *volume.KMSKeyID)
+	if volume.KmsKeyId != nil {
+		d.Set("kms_key_id", *volume.KmsKeyId)
 	}
 	if volume.Size != nil {
 		d.Set("size", *volume.Size)
 	}
-	if volume.SnapshotID != nil {
-		d.Set("snapshot_id", *volume.SnapshotID)
+	if volume.SnapshotId != nil {
+		d.Set("snapshot_id", *volume.SnapshotId)
 	}
 	if volume.VolumeType != nil {
 		d.Set("type", *volume.VolumeType)
 	}
+
+	if volume.VolumeType != nil && *volume.VolumeType == "io1" {
+		// Only set the iops attribute if the volume type is io1. Setting otherwise
+		// can trigger a refresh/plan loop based on the computed value that is given
+		// from AWS, and prevent us from specifying 0 as a valid iops.
+		//   See https://github.com/hashicorp/terraform/pull/4146
+		if volume.Iops != nil {
+			d.Set("iops", *volume.Iops)
+		}
+	}
+
 	if volume.Tags != nil {
 		d.Set("tags", tagsToMap(volume.Tags))
 	}

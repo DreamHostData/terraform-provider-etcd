@@ -2,6 +2,7 @@ package aws
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/route53"
 )
 
+var r53NoRecordsFound = errors.New("No matching Hosted Zone found")
+var r53NoHostedZoneFound = errors.New("No matching records found")
+
 func resourceAwsRoute53Record() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceAwsRoute53RecordCreate,
@@ -23,11 +27,18 @@ func resourceAwsRoute53Record() *schema.Resource {
 		Update: resourceAwsRoute53RecordUpdate,
 		Delete: resourceAwsRoute53RecordDelete,
 
+		SchemaVersion: 1,
+		MigrateState:  resourceAwsRoute53RecordMigrateState,
+
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				StateFunc: func(v interface{}) string {
+					value := strings.TrimSuffix(v.(string), ".")
+					return strings.ToLower(value)
+				},
 			},
 
 			"fqdn": &schema.Schema{
@@ -45,6 +56,13 @@ func resourceAwsRoute53Record() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+					value := v.(string)
+					if value == "" {
+						es = append(es, fmt.Errorf("Cannot have empty zone_id"))
+					}
+					return
+				},
 			},
 
 			"ttl": &schema.Schema{
@@ -53,9 +71,13 @@ func resourceAwsRoute53Record() *schema.Resource {
 				ConflictsWith: []string{"alias"},
 			},
 
+			// Weight uses a special sentinel value to indicate its presence.
+			// Because 0 is a valid value for Weight, we default to -1 so that any
+			// inclusion of a weight (zero or not) will be a usable value
 			"weight": &schema.Schema{
 				Type:     schema.TypeInt,
 				Optional: true,
+				Default:  -1,
 			},
 
 			"set_identifier": &schema.Schema{
@@ -89,6 +111,16 @@ func resourceAwsRoute53Record() *schema.Resource {
 				Set: resourceAwsRoute53AliasRecordHash,
 			},
 
+			"failover": &schema.Schema{ // PRIMARY | SECONDARY
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+
+			"health_check_id": &schema.Schema{ // ID of health check
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+
 			"records": &schema.Schema{
 				Type:          schema.TypeSet,
 				ConflictsWith: []string{"alias"},
@@ -118,12 +150,15 @@ func resourceAwsRoute53RecordCreate(d *schema.ResourceData, meta interface{}) er
 	zone := cleanZoneID(d.Get("zone_id").(string))
 
 	var err error
-	zoneRecord, err := conn.GetHostedZone(&route53.GetHostedZoneInput{ID: aws.String(zone)})
+	zoneRecord, err := conn.GetHostedZone(&route53.GetHostedZoneInput{Id: aws.String(zone)})
 	if err != nil {
 		return err
 	}
+	if zoneRecord.HostedZone == nil {
+		return fmt.Errorf("[WARN] No Route53 Zone found for id (%s)", zone)
+	}
 
-	// Get the record
+	// Build the record
 	rec, err := resourceAwsRoute53RecordBuildSet(d, *zoneRecord.HostedZone.Name)
 	if err != nil {
 		return err
@@ -143,16 +178,16 @@ func resourceAwsRoute53RecordCreate(d *schema.ResourceData, meta interface{}) er
 	}
 
 	req := &route53.ChangeResourceRecordSetsInput{
-		HostedZoneID: aws.String(cleanZoneID(*zoneRecord.HostedZone.ID)),
+		HostedZoneId: aws.String(cleanZoneID(*zoneRecord.HostedZone.Id)),
 		ChangeBatch:  changeBatch,
 	}
 
-	log.Printf("[DEBUG] Creating resource records for zone: %s, name: %s",
-		zone, *rec.Name)
+	log.Printf("[DEBUG] Creating resource records for zone: %s, name: %s\n\n%s",
+		zone, *rec.Name, req)
 
 	wait := resource.StateChangeConf{
 		Pending:    []string{"rejected"},
-		Target:     "accepted",
+		Target:     []string{"accepted"},
 		Timeout:    5 * time.Minute,
 		MinTimeout: 1 * time.Second,
 		Refresh: func() (interface{}, string, error) {
@@ -182,24 +217,25 @@ func resourceAwsRoute53RecordCreate(d *schema.ResourceData, meta interface{}) er
 	// Generate an ID
 	vars := []string{
 		zone,
-		d.Get("name").(string),
+		strings.ToLower(d.Get("name").(string)),
 		d.Get("type").(string),
 	}
 	if v, ok := d.GetOk("set_identifier"); ok {
 		vars = append(vars, v.(string))
 	}
+
 	d.SetId(strings.Join(vars, "_"))
 
 	// Wait until we are done
 	wait = resource.StateChangeConf{
 		Delay:      30 * time.Second,
 		Pending:    []string{"PENDING"},
-		Target:     "INSYNC",
+		Target:     []string{"INSYNC"},
 		Timeout:    30 * time.Minute,
 		MinTimeout: 5 * time.Second,
 		Refresh: func() (result interface{}, state string, err error) {
 			changeRequest := &route53.GetChangeInput{
-				ID: aws.String(cleanChangeID(*changeInfo.ID)),
+				Id: aws.String(cleanChangeID(*changeInfo.Id)),
 			}
 			return resourceAwsGoRoute53Wait(conn, changeRequest)
 		},
@@ -209,91 +245,146 @@ func resourceAwsRoute53RecordCreate(d *schema.ResourceData, meta interface{}) er
 		return err
 	}
 
-	return nil
+	return resourceAwsRoute53RecordRead(d, meta)
 }
 
 func resourceAwsRoute53RecordRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AWSClient).r53conn
+	// If we don't have a zone ID we're doing an import. Parse it from the ID.
+	if _, ok := d.GetOk("zone_id"); !ok {
+		parts := strings.Split(d.Id(), "_")
+		d.Set("zone_id", parts[0])
+		d.Set("name", parts[1])
+		d.Set("type", parts[2])
+		if len(parts) > 3 {
+			d.Set("set_identifier", parts[3])
+		}
 
+		d.Set("weight", -1)
+	}
+
+	record, err := findRecord(d, meta)
+	if err != nil {
+		switch err {
+		case r53NoHostedZoneFound, r53NoRecordsFound:
+			log.Printf("[DEBUG] %s for: %s, removing from state file", err, d.Id())
+			d.SetId("")
+			return nil
+		default:
+			return err
+		}
+	}
+
+	err = d.Set("records", flattenResourceRecords(record.ResourceRecords))
+	if err != nil {
+		return fmt.Errorf("[DEBUG] Error setting records for: %s, error: %#v", d.Id(), err)
+	}
+
+	if alias := record.AliasTarget; alias != nil {
+		if _, ok := d.GetOk("alias"); !ok {
+			d.Set("alias", []interface{}{
+				map[string]interface{}{
+					"zone_id": *alias.HostedZoneId,
+					"name":    *alias.DNSName,
+					"evaluate_target_health": *alias.EvaluateTargetHealth,
+				},
+			})
+		}
+	}
+
+	d.Set("ttl", record.TTL)
+	// Only set the weight if it's non-nil, otherwise we end up with a 0 weight
+	// which has actual contextual meaning with Route 53 records
+	//   See http://docs.aws.amazon.com/fr_fr/Route53/latest/APIReference/API_ChangeResourceRecordSets_Examples.html
+	if record.Weight != nil {
+		d.Set("weight", record.Weight)
+	}
+	d.Set("set_identifier", record.SetIdentifier)
+	d.Set("failover", record.Failover)
+	d.Set("health_check_id", record.HealthCheckId)
+
+	return nil
+}
+
+// findRecord takes a ResourceData struct for aws_resource_route53_record. It
+// uses the referenced zone_id to query Route53 and find information on it's
+// records.
+//
+// If records are found, it returns the matching
+// route53.ResourceRecordSet and nil for the error.
+//
+// If no hosted zone is found, it returns a nil recordset and r53NoHostedZoneFound
+// error.
+//
+// If no matching recordset is found, it returns nil and a r53NoRecordsFound
+// error
+//
+// If there are other errors, it returns nil a nil recordset and passes on the
+// error.
+func findRecord(d *schema.ResourceData, meta interface{}) (*route53.ResourceRecordSet, error) {
+	conn := meta.(*AWSClient).r53conn
+	// Scan for a
 	zone := cleanZoneID(d.Get("zone_id").(string))
 
 	// get expanded name
-	zoneRecord, err := conn.GetHostedZone(&route53.GetHostedZoneInput{ID: aws.String(zone)})
+	zoneRecord, err := conn.GetHostedZone(&route53.GetHostedZoneInput{Id: aws.String(zone)})
 	if err != nil {
-		return err
+		if r53err, ok := err.(awserr.Error); ok && r53err.Code() == "NoSuchHostedZone" {
+			return nil, r53NoHostedZoneFound
+		}
+		return nil, err
 	}
+
 	en := expandRecordName(d.Get("name").(string), *zoneRecord.HostedZone.Name)
 	log.Printf("[DEBUG] Expanded record name: %s", en)
 	d.Set("fqdn", en)
 
 	lopts := &route53.ListResourceRecordSetsInput{
-		HostedZoneID:    aws.String(cleanZoneID(zone)),
+		HostedZoneId:    aws.String(cleanZoneID(zone)),
 		StartRecordName: aws.String(en),
 		StartRecordType: aws.String(d.Get("type").(string)),
 	}
 
-	if v, ok := d.GetOk("set_identifier"); ok {
-		lopts.StartRecordIdentifier = aws.String(v.(string))
-	}
-
+	log.Printf("[DEBUG] List resource records sets for zone: %s, opts: %s",
+		zone, lopts)
 	resp, err := conn.ListResourceRecordSets(lopts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Scan for a matching record
-	found := false
 	for _, record := range resp.ResourceRecordSets {
 		name := cleanRecordName(*record.Name)
-		if FQDN(name) != FQDN(*lopts.StartRecordName) {
+		if FQDN(strings.ToLower(name)) != FQDN(strings.ToLower(*lopts.StartRecordName)) {
 			continue
 		}
 		if strings.ToUpper(*record.Type) != strings.ToUpper(*lopts.StartRecordType) {
 			continue
 		}
 
-		if lopts.StartRecordIdentifier != nil && *record.SetIdentifier != *lopts.StartRecordIdentifier {
+		if record.SetIdentifier != nil && *record.SetIdentifier != d.Get("set_identifier") {
 			continue
 		}
-
-		found = true
-
-		err := d.Set("records", flattenResourceRecords(record.ResourceRecords))
-		if err != nil {
-			return fmt.Errorf("[DEBUG] Error setting records for: %s, error: %#v", en, err)
-		}
-		d.Set("ttl", record.TTL)
-		d.Set("weight", record.Weight)
-		d.Set("set_identifier", record.SetIdentifier)
-
-		break
+		// The only safe return where a record is found
+		return record, nil
 	}
-
-	if !found {
-		d.SetId("")
-	}
-
-	return nil
+	return nil, r53NoRecordsFound
 }
 
 func resourceAwsRoute53RecordDelete(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).r53conn
-
-	zone := cleanZoneID(d.Get("zone_id").(string))
-	log.Printf("[DEBUG] Deleting resource records for zone: %s, name: %s",
-		zone, d.Get("name").(string))
-	var err error
-	zoneRecord, err := conn.GetHostedZone(&route53.GetHostedZoneInput{ID: aws.String(zone)})
-	if err != nil {
-		return err
-	}
 	// Get the records
-	rec, err := resourceAwsRoute53RecordBuildSet(d, *zoneRecord.HostedZone.Name)
+	rec, err := findRecord(d, meta)
 	if err != nil {
-		return err
+		switch err {
+		case r53NoHostedZoneFound, r53NoRecordsFound:
+			log.Printf("[DEBUG] %s for: %s, removing from state file", err, d.Id())
+			d.SetId("")
+			return nil
+		default:
+			return err
+		}
 	}
 
-	// Create the new records
+	// Change batch for deleting
 	changeBatch := &route53.ChangeBatch{
 		Comment: aws.String("Deleted by Terraform"),
 		Changes: []*route53.Change{
@@ -304,14 +395,16 @@ func resourceAwsRoute53RecordDelete(d *schema.ResourceData, meta interface{}) er
 		},
 	}
 
+	zone := cleanZoneID(d.Get("zone_id").(string))
+
 	req := &route53.ChangeResourceRecordSetsInput{
-		HostedZoneID: aws.String(cleanZoneID(zone)),
+		HostedZoneId: aws.String(cleanZoneID(zone)),
 		ChangeBatch:  changeBatch,
 	}
 
 	wait := resource.StateChangeConf{
 		Pending:    []string{"rejected"},
-		Target:     "accepted",
+		Target:     []string{"accepted"},
 		Timeout:    5 * time.Minute,
 		MinTimeout: 1 * time.Second,
 		Refresh: func() (interface{}, string, error) {
@@ -358,7 +451,7 @@ func resourceAwsRoute53RecordBuildSet(d *schema.ResourceData, zoneName string) (
 	}
 
 	if v, ok := d.GetOk("ttl"); ok {
-		rec.TTL = aws.Long(int64(v.(int)))
+		rec.TTL = aws.Int64(int64(v.(int)))
 	}
 
 	// Resource records
@@ -376,8 +469,8 @@ func resourceAwsRoute53RecordBuildSet(d *schema.ResourceData, zoneName string) (
 		alias := aliases[0].(map[string]interface{})
 		rec.AliasTarget = &route53.AliasTarget{
 			DNSName:              aws.String(alias["name"].(string)),
-			EvaluateTargetHealth: aws.Boolean(alias["evaluate_target_health"].(bool)),
-			HostedZoneID:         aws.String(alias["zone_id"].(string)),
+			EvaluateTargetHealth: aws.Bool(alias["evaluate_target_health"].(bool)),
+			HostedZoneId:         aws.String(alias["zone_id"].(string)),
 		}
 		log.Printf("[DEBUG] Creating alias: %#v", alias)
 	} else {
@@ -390,12 +483,27 @@ func resourceAwsRoute53RecordBuildSet(d *schema.ResourceData, zoneName string) (
 		}
 	}
 
-	if v, ok := d.GetOk("weight"); ok {
-		rec.Weight = aws.Long(int64(v.(int)))
+	if v, ok := d.GetOk("failover"); ok {
+		if _, ok := d.GetOk("set_identifier"); !ok {
+			return nil, fmt.Errorf(`provider.aws: aws_route53_record: %s: "set_identifier": required field is not set when "failover" is set`, d.Get("name").(string))
+		}
+		rec.Failover = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("health_check_id"); ok {
+		rec.HealthCheckId = aws.String(v.(string))
 	}
 
 	if v, ok := d.GetOk("set_identifier"); ok {
 		rec.SetIdentifier = aws.String(v.(string))
+	}
+
+	w := d.Get("weight").(int)
+	if w > -1 {
+		if _, ok := d.GetOk("set_identifier"); !ok {
+			return nil, fmt.Errorf(`provider.aws: aws_route53_record: %s: "set_identifier": required field is not set when "weight" is set`, d.Get("name").(string))
+		}
+		rec.Weight = aws.Int64(int64(w))
 	}
 
 	return rec, nil
@@ -426,7 +534,7 @@ func cleanRecordName(name string) string {
 // If it does not, add the zone name to form a fully qualified name
 // and keep AWS happy.
 func expandRecordName(name, zone string) string {
-	rn := strings.TrimSuffix(name, ".")
+	rn := strings.ToLower(strings.TrimSuffix(name, "."))
 	zone = strings.TrimSuffix(zone, ".")
 	if !strings.HasSuffix(rn, zone) {
 		rn = strings.Join([]string{name, zone}, ".")

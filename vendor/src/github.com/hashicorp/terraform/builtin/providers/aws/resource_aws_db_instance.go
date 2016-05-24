@@ -3,6 +3,7 @@ package aws
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,26 +31,38 @@ func resourceAwsDbInstance() *schema.Resource {
 				ForceNew: true,
 			},
 
+			"arn": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
 			"username": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
 			"password": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 			},
 
 			"engine": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
+				StateFunc: func(v interface{}) string {
+					value := v.(string)
+					return strings.ToLower(value)
+				},
 			},
 
 			"engine_version": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"storage_encrypted": &schema.Schema{
@@ -60,7 +73,8 @@ func resourceAwsDbInstance() *schema.Resource {
 
 			"allocated_storage": &schema.Schema{
 				Type:     schema.TypeInt,
-				Required: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"storage_type": &schema.Schema{
@@ -70,9 +84,11 @@ func resourceAwsDbInstance() *schema.Resource {
 			},
 
 			"identifier": &schema.Schema{
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ForceNew:     true,
+				ValidateFunc: validateRdsId,
 			},
 
 			"instance_class": &schema.Schema{
@@ -114,6 +130,13 @@ func resourceAwsDbInstance() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
+				StateFunc: func(v interface{}) string {
+					if v != nil {
+						value := v.(string)
+						return strings.ToLower(value)
+					}
+					return ""
+				},
 			},
 
 			"multi_az": &schema.Schema{
@@ -132,7 +155,7 @@ func resourceAwsDbInstance() *schema.Resource {
 			"publicly_accessible": &schema.Schema{
 				Type:     schema.TypeBool,
 				Optional: true,
-				ForceNew: true,
+				Computed: true,
 			},
 
 			"vpc_security_group_ids": &schema.Schema{
@@ -153,6 +176,32 @@ func resourceAwsDbInstance() *schema.Resource {
 			"final_snapshot_identifier": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+					value := v.(string)
+					if !regexp.MustCompile(`^[0-9A-Za-z-]+$`).MatchString(value) {
+						es = append(es, fmt.Errorf(
+							"only alphanumeric characters and hyphens allowed in %q", k))
+					}
+					if regexp.MustCompile(`--`).MatchString(value) {
+						es = append(es, fmt.Errorf("%q cannot contain two consecutive hyphens", k))
+					}
+					if regexp.MustCompile(`-$`).MatchString(value) {
+						es = append(es, fmt.Errorf("%q cannot end in a hyphen", k))
+					}
+					return
+				},
+			},
+
+			"skip_final_snapshot": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  true,
+			},
+
+			"copy_tags_to_snapshot": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
 			},
 
 			"db_subnet_group_name": &schema.Schema{
@@ -203,6 +252,50 @@ func resourceAwsDbInstance() *schema.Resource {
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 
+			"snapshot_identifier": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: false,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+
+			"auto_minor_version_upgrade": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  true,
+			},
+
+			"allow_major_version_upgrade": &schema.Schema{
+				Type:     schema.TypeBool,
+				Computed: false,
+				Optional: true,
+			},
+
+			"monitoring_role_arn": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+
+			"monitoring_interval": &schema.Schema{
+				Type:     schema.TypeInt,
+				Optional: true,
+				Default:  0,
+			},
+
+			"option_group_name": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
+
+			"kms_key_id": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
+
 			"tags": tagsSchema(),
 		},
 	}
@@ -212,50 +305,202 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 	conn := meta.(*AWSClient).rdsconn
 	tags := tagsFromMapRDS(d.Get("tags").(map[string]interface{}))
 
+	identifier := d.Get("identifier").(string)
+	// Generate a unique ID for the user
+	if identifier == "" {
+		identifier = resource.PrefixedUniqueId("tf-")
+		// SQL Server identifier size is max 15 chars, so truncate
+		if engine := d.Get("engine").(string); engine != "" {
+			if strings.Contains(strings.ToLower(engine), "sqlserver") {
+				identifier = identifier[:15]
+			}
+		}
+		d.Set("identifier", identifier)
+	}
+
 	if v, ok := d.GetOk("replicate_source_db"); ok {
 		opts := rds.CreateDBInstanceReadReplicaInput{
 			SourceDBInstanceIdentifier: aws.String(v.(string)),
+			CopyTagsToSnapshot:         aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
 			DBInstanceClass:            aws.String(d.Get("instance_class").(string)),
-			DBInstanceIdentifier:       aws.String(d.Get("identifier").(string)),
+			DBInstanceIdentifier:       aws.String(identifier),
 			Tags:                       tags,
 		}
 		if attr, ok := d.GetOk("iops"); ok {
-			opts.IOPS = aws.Long(int64(attr.(int)))
+			opts.Iops = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("port"); ok {
-			opts.Port = aws.Long(int64(attr.(int)))
+			opts.Port = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("availability_zone"); ok {
 			opts.AvailabilityZone = aws.String(attr.(string))
 		}
 
-		if attr, ok := d.GetOk("publicly_accessible"); ok {
-			opts.PubliclyAccessible = aws.Boolean(attr.(bool))
+		if attr, ok := d.GetOk("storage_type"); ok {
+			opts.StorageType = aws.String(attr.(string))
 		}
+
+		if attr, ok := d.GetOk("publicly_accessible"); ok {
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("db_subnet_group_name"); ok {
+			opts.DBSubnetGroupName = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("monitoring_role_arn"); ok {
+			opts.MonitoringRoleArn = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("monitoring_interval"); ok {
+			opts.MonitoringInterval = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("option_group_name"); ok {
+			opts.OptionGroupName = aws.String(attr.(string))
+		}
+
+		log.Printf("[DEBUG] DB Instance Replica create configuration: %#v", opts)
 		_, err := conn.CreateDBInstanceReadReplica(&opts)
 		if err != nil {
 			return fmt.Errorf("Error creating DB Instance: %s", err)
 		}
+	} else if _, ok := d.GetOk("snapshot_identifier"); ok {
+		opts := rds.RestoreDBInstanceFromDBSnapshotInput{
+			DBInstanceClass:         aws.String(d.Get("instance_class").(string)),
+			DBInstanceIdentifier:    aws.String(d.Get("identifier").(string)),
+			DBSnapshotIdentifier:    aws.String(d.Get("snapshot_identifier").(string)),
+			AutoMinorVersionUpgrade: aws.Bool(d.Get("auto_minor_version_upgrade").(bool)),
+			Tags:               tags,
+			CopyTagsToSnapshot: aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
+		}
+
+		if attr, ok := d.GetOk("availability_zone"); ok {
+			opts.AvailabilityZone = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("db_subnet_group_name"); ok {
+			opts.DBSubnetGroupName = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("engine"); ok {
+			opts.Engine = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("iops"); ok {
+			opts.Iops = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("license_model"); ok {
+			opts.LicenseModel = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("multi_az"); ok {
+			opts.MultiAZ = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("option_group_name"); ok {
+			opts.OptionGroupName = aws.String(attr.(string))
+
+		}
+
+		if attr, ok := d.GetOk("port"); ok {
+			opts.Port = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("publicly_accessible"); ok {
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("tde_credential_arn"); ok {
+			opts.TdeCredentialArn = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("storage_type"); ok {
+			opts.StorageType = aws.String(attr.(string))
+		}
+
+		log.Printf("[DEBUG] DB Instance restore from snapshot configuration: %s", opts)
+		_, err := conn.RestoreDBInstanceFromDBSnapshot(&opts)
+		if err != nil {
+			return fmt.Errorf("Error creating DB Instance: %s", err)
+		}
+
+		var sgUpdate bool
+		if attr := d.Get("vpc_security_group_ids").(*schema.Set); attr.Len() > 0 {
+			sgUpdate = true
+		}
+		if attr := d.Get("security_group_names").(*schema.Set); attr.Len() > 0 {
+			sgUpdate = true
+		}
+		if sgUpdate {
+			log.Printf("[INFO] DB is restoring from snapshot with default security, but custom security should be set, will now update after snapshot is restored!")
+
+			// wait for instance to get up and then modify security
+			d.SetId(d.Get("identifier").(string))
+
+			log.Printf("[INFO] DB Instance ID: %s", d.Id())
+
+			log.Println(
+				"[INFO] Waiting for DB Instance to be available")
+
+			stateConf := &resource.StateChangeConf{
+				Pending: []string{"creating", "backing-up", "modifying", "resetting-master-credentials",
+					"maintenance", "renaming", "rebooting", "upgrading"},
+				Target:     []string{"available"},
+				Refresh:    resourceAwsDbInstanceStateRefreshFunc(d, meta),
+				Timeout:    40 * time.Minute,
+				MinTimeout: 10 * time.Second,
+				Delay:      30 * time.Second, // Wait 30 secs before starting
+			}
+
+			// Wait, catching any errors
+			_, err := stateConf.WaitForState()
+			if err != nil {
+				return err
+			}
+
+			err = resourceAwsDbInstanceUpdate(d, meta)
+			if err != nil {
+				return err
+			}
+
+		}
 	} else {
+		if _, ok := d.GetOk("allocated_storage"); !ok {
+			return fmt.Errorf(`provider.aws: aws_db_instance: %s: "allocated_storage": required field is not set`, d.Get("name").(string))
+		}
+		if _, ok := d.GetOk("engine"); !ok {
+			return fmt.Errorf(`provider.aws: aws_db_instance: %s: "engine": required field is not set`, d.Get("name").(string))
+		}
+		if _, ok := d.GetOk("password"); !ok {
+			return fmt.Errorf(`provider.aws: aws_db_instance: %s: "password": required field is not set`, d.Get("name").(string))
+		}
+		if _, ok := d.GetOk("username"); !ok {
+			return fmt.Errorf(`provider.aws: aws_db_instance: %s: "username": required field is not set`, d.Get("name").(string))
+		}
 		opts := rds.CreateDBInstanceInput{
-			AllocatedStorage:     aws.Long(int64(d.Get("allocated_storage").(int))),
-			DBName:               aws.String(d.Get("name").(string)),
-			DBInstanceClass:      aws.String(d.Get("instance_class").(string)),
-			DBInstanceIdentifier: aws.String(d.Get("identifier").(string)),
-			MasterUsername:       aws.String(d.Get("username").(string)),
-			MasterUserPassword:   aws.String(d.Get("password").(string)),
-			Engine:               aws.String(d.Get("engine").(string)),
-			EngineVersion:        aws.String(d.Get("engine_version").(string)),
-			StorageEncrypted:     aws.Boolean(d.Get("storage_encrypted").(bool)),
-			Tags:                 tags,
+			AllocatedStorage:        aws.Int64(int64(d.Get("allocated_storage").(int))),
+			DBName:                  aws.String(d.Get("name").(string)),
+			DBInstanceClass:         aws.String(d.Get("instance_class").(string)),
+			DBInstanceIdentifier:    aws.String(d.Get("identifier").(string)),
+			MasterUsername:          aws.String(d.Get("username").(string)),
+			MasterUserPassword:      aws.String(d.Get("password").(string)),
+			Engine:                  aws.String(d.Get("engine").(string)),
+			EngineVersion:           aws.String(d.Get("engine_version").(string)),
+			StorageEncrypted:        aws.Bool(d.Get("storage_encrypted").(bool)),
+			AutoMinorVersionUpgrade: aws.Bool(d.Get("auto_minor_version_upgrade").(bool)),
+			Tags:               tags,
+			CopyTagsToSnapshot: aws.Bool(d.Get("copy_tags_to_snapshot").(bool)),
 		}
 
 		attr := d.Get("backup_retention_period")
-		opts.BackupRetentionPeriod = aws.Long(int64(attr.(int)))
+		opts.BackupRetentionPeriod = aws.Int64(int64(attr.(int)))
 		if attr, ok := d.GetOk("multi_az"); ok {
-			opts.MultiAZ = aws.Boolean(attr.(bool))
+			opts.MultiAZ = aws.Bool(attr.(bool))
+
 		}
 
 		if attr, ok := d.GetOk("maintenance_window"); ok {
@@ -278,7 +523,7 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 			for _, v := range attr.List() {
 				s = append(s, aws.String(v.(string)))
 			}
-			opts.VPCSecurityGroupIDs = s
+			opts.VpcSecurityGroupIds = s
 		}
 
 		if attr := d.Get("security_group_names").(*schema.Set); attr.Len() > 0 {
@@ -297,11 +542,11 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		}
 
 		if attr, ok := d.GetOk("iops"); ok {
-			opts.IOPS = aws.Long(int64(attr.(int)))
+			opts.Iops = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("port"); ok {
-			opts.Port = aws.Long(int64(attr.(int)))
+			opts.Port = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("availability_zone"); ok {
@@ -309,12 +554,39 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		}
 
 		if attr, ok := d.GetOk("publicly_accessible"); ok {
-			opts.PubliclyAccessible = aws.Boolean(attr.(bool))
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("monitoring_role_arn"); ok {
+			opts.MonitoringRoleArn = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("monitoring_interval"); ok {
+			opts.MonitoringInterval = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("option_group_name"); ok {
+			opts.OptionGroupName = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("kms_key_id"); ok {
+			opts.KmsKeyId = aws.String(attr.(string))
 		}
 
 		log.Printf("[DEBUG] DB Instance create configuration: %#v", opts)
 		var err error
-		_, err = conn.CreateDBInstance(&opts)
+		err = resource.Retry(5*time.Minute, func() *resource.RetryError {
+			_, err = conn.CreateDBInstance(&opts)
+			if err != nil {
+				if awsErr, ok := err.(awserr.Error); ok {
+					if awsErr.Code() == "InvalidParameterValue" && strings.Contains(awsErr.Message(), "ENHANCED_MONITORING") {
+						return resource.RetryableError(awsErr)
+					}
+				}
+				return resource.NonRetryableError(err)
+			}
+			return nil
+		})
 		if err != nil {
 			return fmt.Errorf("Error creating DB Instance: %s", err)
 		}
@@ -328,8 +600,9 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		"[INFO] Waiting for DB Instance to be available")
 
 	stateConf := &resource.StateChangeConf{
-		Pending:    []string{"creating", "backing-up", "modifying"},
-		Target:     "available",
+		Pending: []string{"creating", "backing-up", "modifying", "resetting-master-credentials",
+			"maintenance", "renaming", "rebooting", "upgrading"},
+		Target:     []string{"available"},
 		Refresh:    resourceAwsDbInstanceStateRefreshFunc(d, meta),
 		Timeout:    40 * time.Minute,
 		MinTimeout: 10 * time.Second,
@@ -361,6 +634,8 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("engine", v.Engine)
 	d.Set("engine_version", v.EngineVersion)
 	d.Set("allocated_storage", v.AllocatedStorage)
+	d.Set("copy_tags_to_snapshot", v.CopyTagsToSnapshot)
+	d.Set("auto_minor_version_upgrade", v.AutoMinorVersionUpgrade)
 	d.Set("storage_type", v.StorageType)
 	d.Set("instance_class", v.DBInstanceClass)
 	d.Set("availability_zone", v.AvailabilityZone)
@@ -368,7 +643,9 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("backup_window", v.PreferredBackupWindow)
 	d.Set("license_model", v.LicenseModel)
 	d.Set("maintenance_window", v.PreferredMaintenanceWindow)
+	d.Set("publicly_accessible", v.PubliclyAccessible)
 	d.Set("multi_az", v.MultiAZ)
+	d.Set("kms_key_id", v.KmsKeyId)
 	if v.DBSubnetGroup != nil {
 		d.Set("db_subnet_group_name", v.DBSubnetGroup.DBSubnetGroupName)
 	}
@@ -389,25 +666,36 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 
 	d.Set("status", v.DBInstanceStatus)
 	d.Set("storage_encrypted", v.StorageEncrypted)
+	if v.OptionGroupMemberships != nil {
+		d.Set("option_group_name", v.OptionGroupMemberships[0].OptionGroupName)
+	}
+
+	if v.MonitoringInterval != nil {
+		d.Set("monitoring_interval", v.MonitoringInterval)
+	}
+
+	if v.MonitoringRoleArn != nil {
+		d.Set("monitoring_role_arn", v.MonitoringRoleArn)
+	}
 
 	// list tags for resource
 	// set tags
 	conn := meta.(*AWSClient).rdsconn
-	arn, err := buildRDSARN(d, meta)
+	arn, err := buildRDSARN(d.Id(), meta)
 	if err != nil {
 		name := "<empty>"
 		if v.DBName != nil && *v.DBName != "" {
 			name = *v.DBName
 		}
-
 		log.Printf("[DEBUG] Error building ARN for DB Instance, not setting Tags for DB %s", name)
 	} else {
+		d.Set("arn", arn)
 		resp, err := conn.ListTagsForResource(&rds.ListTagsForResourceInput{
 			ResourceName: aws.String(arn),
 		})
 
 		if err != nil {
-			log.Printf("[DEBUG] Error retreiving tags for ARN: %s", arn)
+			log.Printf("[DEBUG] Error retrieving tags for ARN: %s", arn)
 		}
 
 		var dt []*rds.Tag
@@ -421,8 +709,8 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	ids := &schema.Set{
 		F: schema.HashString,
 	}
-	for _, v := range v.VPCSecurityGroups {
-		ids.Add(*v.VPCSecurityGroupID)
+	for _, v := range v.VpcSecurityGroups {
+		ids.Add(*v.VpcSecurityGroupId)
 	}
 	d.Set("vpc_security_group_ids", ids)
 
@@ -457,11 +745,15 @@ func resourceAwsDbInstanceDelete(d *schema.ResourceData, meta interface{}) error
 
 	opts := rds.DeleteDBInstanceInput{DBInstanceIdentifier: aws.String(d.Id())}
 
-	finalSnapshot := d.Get("final_snapshot_identifier").(string)
-	if finalSnapshot == "" {
-		opts.SkipFinalSnapshot = aws.Boolean(true)
-	} else {
-		opts.FinalDBSnapshotIdentifier = aws.String(finalSnapshot)
+	skipFinalSnapshot := d.Get("skip_final_snapshot").(bool)
+	opts.SkipFinalSnapshot = aws.Bool(skipFinalSnapshot)
+
+	if !skipFinalSnapshot {
+		if name, present := d.GetOk("final_snapshot_identifier"); present {
+			opts.FinalDBSnapshotIdentifier = aws.String(name.(string))
+		} else {
+			return fmt.Errorf("DB Instance FinalSnapshotIdentifier is required when a final snapshot is required")
+		}
 	}
 
 	log.Printf("[DEBUG] DB Instance destroy configuration: %v", opts)
@@ -474,7 +766,7 @@ func resourceAwsDbInstanceDelete(d *schema.ResourceData, meta interface{}) error
 	stateConf := &resource.StateChangeConf{
 		Pending: []string{"creating", "backing-up",
 			"modifying", "deleting", "available"},
-		Target:     "",
+		Target:     []string{},
 		Refresh:    resourceAwsDbInstanceStateRefreshFunc(d, meta),
 		Timeout:    40 * time.Minute,
 		MinTimeout: 10 * time.Second,
@@ -493,7 +785,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	d.Partial(true)
 
 	req := &rds.ModifyDBInstanceInput{
-		ApplyImmediately:     aws.Boolean(d.Get("apply_immediately").(bool)),
+		ApplyImmediately:     aws.Bool(d.Get("apply_immediately").(bool)),
 		DBInstanceIdentifier: aws.String(d.Id()),
 	}
 	d.SetPartial("apply_immediately")
@@ -501,12 +793,22 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	requestUpdate := false
 	if d.HasChange("allocated_storage") {
 		d.SetPartial("allocated_storage")
-		req.AllocatedStorage = aws.Long(int64(d.Get("allocated_storage").(int)))
+		req.AllocatedStorage = aws.Int64(int64(d.Get("allocated_storage").(int)))
+		requestUpdate = true
+	}
+	if d.HasChange("allow_major_version_upgrade") {
+		d.SetPartial("allow_major_version_upgrade")
+		req.AllowMajorVersionUpgrade = aws.Bool(d.Get("allow_major_version_upgrade").(bool))
 		requestUpdate = true
 	}
 	if d.HasChange("backup_retention_period") {
 		d.SetPartial("backup_retention_period")
-		req.BackupRetentionPeriod = aws.Long(int64(d.Get("backup_retention_period").(int)))
+		req.BackupRetentionPeriod = aws.Int64(int64(d.Get("backup_retention_period").(int)))
+		requestUpdate = true
+	}
+	if d.HasChange("copy_tags_to_snapshot") {
+		d.SetPartial("copy_tags_to_snapshot")
+		req.CopyTagsToSnapshot = aws.Bool(d.Get("copy_tags_to_snapshot").(bool))
 		requestUpdate = true
 	}
 	if d.HasChange("instance_class") {
@@ -526,7 +828,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	}
 	if d.HasChange("iops") {
 		d.SetPartial("iops")
-		req.IOPS = aws.Long(int64(d.Get("iops").(int)))
+		req.Iops = aws.Int64(int64(d.Get("iops").(int)))
 		requestUpdate = true
 	}
 	if d.HasChange("backup_window") {
@@ -546,12 +848,38 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	}
 	if d.HasChange("multi_az") {
 		d.SetPartial("multi_az")
-		req.MultiAZ = aws.Boolean(d.Get("multi_az").(bool))
+		req.MultiAZ = aws.Bool(d.Get("multi_az").(bool))
+		requestUpdate = true
+	}
+	if d.HasChange("publicly_accessible") {
+		d.SetPartial("publicly_accessible")
+		req.PubliclyAccessible = aws.Bool(d.Get("publicly_accessible").(bool))
 		requestUpdate = true
 	}
 	if d.HasChange("storage_type") {
 		d.SetPartial("storage_type")
 		req.StorageType = aws.String(d.Get("storage_type").(string))
+		requestUpdate = true
+
+		if *req.StorageType == "io1" {
+			req.Iops = aws.Int64(int64(d.Get("iops").(int)))
+		}
+	}
+	if d.HasChange("auto_minor_version_upgrade") {
+		d.SetPartial("auto_minor_version_upgrade")
+		req.AutoMinorVersionUpgrade = aws.Bool(d.Get("auto_minor_version_upgrade").(bool))
+		requestUpdate = true
+	}
+
+	if d.HasChange("monitoring_role_arn") {
+		d.SetPartial("monitoring_role_arn")
+		req.MonitoringRoleArn = aws.String(d.Get("monitoring_role_arn").(string))
+		requestUpdate = true
+	}
+
+	if d.HasChange("monitoring_interval") {
+		d.SetPartial("monitoring_interval")
+		req.MonitoringInterval = aws.Int64(int64(d.Get("monitoring_interval").(int)))
 		requestUpdate = true
 	}
 
@@ -561,12 +889,12 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 			for _, v := range attr.List() {
 				s = append(s, aws.String(v.(string)))
 			}
-			req.VPCSecurityGroupIDs = s
+			req.VpcSecurityGroupIds = s
 		}
 		requestUpdate = true
 	}
 
-	if d.HasChange("vpc_security_group_ids") {
+	if d.HasChange("security_group_names") {
 		if attr := d.Get("security_group_names").(*schema.Set); attr.Len() > 0 {
 			var s []*string
 			for _, v := range attr.List() {
@@ -574,6 +902,12 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 			}
 			req.DBSecurityGroups = s
 		}
+		requestUpdate = true
+	}
+
+	if d.HasChange("option_group_name") {
+		d.SetPartial("option_group_name")
+		req.OptionGroupName = aws.String(d.Get("option_group_name").(string))
 		requestUpdate = true
 	}
 
@@ -586,7 +920,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 		}
 	}
 
-	// seperate request to promote a database
+	// separate request to promote a database
 	if d.HasChange("replicate_source_db") {
 		if d.Get("replicate_source_db").(string) == "" {
 			// promote
@@ -594,7 +928,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 				DBInstanceIdentifier: aws.String(d.Id()),
 			}
 			attr := d.Get("backup_retention_period")
-			opts.BackupRetentionPeriod = aws.Long(int64(attr.(int)))
+			opts.BackupRetentionPeriod = aws.Int64(int64(attr.(int)))
 			if attr, ok := d.GetOk("backup_window"); ok {
 				opts.PreferredBackupWindow = aws.String(attr.(string))
 			}
@@ -608,7 +942,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 		}
 	}
 
-	if arn, err := buildRDSARN(d, meta); err == nil {
+	if arn, err := buildRDSARN(d.Id(), meta); err == nil {
 		if err := setTagsRDS(conn, d, arn); err != nil {
 			return err
 		} else {
@@ -616,9 +950,14 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 		}
 	}
 	d.Partial(false)
+
 	return resourceAwsDbInstanceRead(d, meta)
 }
 
+// resourceAwsDbInstanceRetrieve fetches DBInstance information from the AWS
+// API. It returns an error if there is a communication problem or unexpected
+// error with AWS. When the DBInstance is not found, it returns no error and a
+// nil pointer.
 func resourceAwsDbInstanceRetrieve(
 	d *schema.ResourceData, meta interface{}) (*rds.DBInstance, error) {
 	conn := meta.(*AWSClient).rdsconn
@@ -630,7 +969,6 @@ func resourceAwsDbInstanceRetrieve(
 	log.Printf("[DEBUG] DB Instance describe configuration: %#v", opts)
 
 	resp, err := conn.DescribeDBInstances(&opts)
-
 	if err != nil {
 		dbinstanceerr, ok := err.(awserr.Error)
 		if ok && dbinstanceerr.Code() == "DBInstanceNotFound" {
@@ -671,7 +1009,7 @@ func resourceAwsDbInstanceStateRefreshFunc(
 	}
 }
 
-func buildRDSARN(d *schema.ResourceData, meta interface{}) (string, error) {
+func buildRDSARN(identifier string, meta interface{}) (string, error) {
 	iamconn := meta.(*AWSClient).iamconn
 	region := meta.(*AWSClient).region
 	// An zero value GetUserInput{} defers to the currently logged in user
@@ -679,8 +1017,8 @@ func buildRDSARN(d *schema.ResourceData, meta interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	userARN := *resp.User.ARN
+	userARN := *resp.User.Arn
 	accountID := strings.Split(userARN, ":")[4]
-	arn := fmt.Sprintf("arn:aws:rds:%s:%s:db:%s", region, accountID, d.Id())
+	arn := fmt.Sprintf("arn:aws:rds:%s:%s:db:%s", region, accountID, identifier)
 	return arn, nil
 }

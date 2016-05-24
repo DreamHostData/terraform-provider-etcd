@@ -21,17 +21,23 @@ func TestAccCloudStackFirewall_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckCloudStackFirewallRulesExist("cloudstack_firewall.foo"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "ipaddress", CLOUDSTACK_PUBLIC_IPADDRESS),
+						"cloudstack_firewall.foo", "ip_address_id", CLOUDSTACK_PUBLIC_IPADDRESS),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.source_cidr", "10.0.0.0/24"),
+						"cloudstack_firewall.foo", "rule.#", "2"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.protocol", "tcp"),
+						"cloudstack_firewall.foo", "rule.60926170.cidr_list.3482919157", "10.0.0.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.#", "2"),
+						"cloudstack_firewall.foo", "rule.60926170.protocol", "tcp"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1209010669", "1000-2000"),
+						"cloudstack_firewall.foo", "rule.60926170.ports.32925333", "8080"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1889509032", "80"),
+						"cloudstack_firewall.foo", "rule.3832507136.cidr_list.3482919157", "10.0.0.0/24"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.3832507136.protocol", "tcp"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1209010669", "1000-2000"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1889509032", "80"),
 				),
 			},
 		},
@@ -49,19 +55,23 @@ func TestAccCloudStackFirewall_update(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckCloudStackFirewallRulesExist("cloudstack_firewall.foo"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "ipaddress", CLOUDSTACK_PUBLIC_IPADDRESS),
+						"cloudstack_firewall.foo", "ip_address_id", CLOUDSTACK_PUBLIC_IPADDRESS),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.#", "1"),
+						"cloudstack_firewall.foo", "rule.#", "2"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.source_cidr", "10.0.0.0/24"),
+						"cloudstack_firewall.foo", "rule.60926170.cidr_list.3482919157", "10.0.0.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.protocol", "tcp"),
+						"cloudstack_firewall.foo", "rule.60926170.protocol", "tcp"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.#", "2"),
+						"cloudstack_firewall.foo", "rule.60926170.ports.32925333", "8080"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1209010669", "1000-2000"),
+						"cloudstack_firewall.foo", "rule.3832507136.cidr_list.3482919157", "10.0.0.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1889509032", "80"),
+						"cloudstack_firewall.foo", "rule.3832507136.protocol", "tcp"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1209010669", "1000-2000"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1889509032", "80"),
 				),
 			},
 
@@ -70,29 +80,33 @@ func TestAccCloudStackFirewall_update(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckCloudStackFirewallRulesExist("cloudstack_firewall.foo"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "ipaddress", CLOUDSTACK_PUBLIC_IPADDRESS),
+						"cloudstack_firewall.foo", "ip_address_id", CLOUDSTACK_PUBLIC_IPADDRESS),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.#", "2"),
+						"cloudstack_firewall.foo", "rule.#", "3"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.source_cidr", "10.0.0.0/24"),
+						"cloudstack_firewall.foo", "rule.2144925929.cidr_list.80081744", "10.0.1.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.protocol", "tcp"),
+						"cloudstack_firewall.foo", "rule.2144925929.cidr_list.3482919157", "10.0.0.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.#", "2"),
+						"cloudstack_firewall.foo", "rule.2144925929.protocol", "tcp"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1209010669", "1000-2000"),
+						"cloudstack_firewall.foo", "rule.2144925929.ports.32925333", "8080"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.1702320581.ports.1889509032", "80"),
+						"cloudstack_firewall.foo", "rule.3832507136.cidr_list.3482919157", "10.0.0.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.3779782959.source_cidr", "172.16.100.0/24"),
+						"cloudstack_firewall.foo", "rule.3832507136.protocol", "tcp"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.3779782959.protocol", "tcp"),
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1209010669", "1000-2000"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.3779782959.ports.#", "2"),
+						"cloudstack_firewall.foo", "rule.3832507136.ports.1889509032", "80"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.3779782959.ports.1889509032", "80"),
+						"cloudstack_firewall.foo", "rule.302279047.cidr_list.2835005819", "172.16.100.0/24"),
 					resource.TestCheckResourceAttr(
-						"cloudstack_firewall.foo", "rule.3779782959.ports.3638101695", "443"),
+						"cloudstack_firewall.foo", "rule.302279047.protocol", "tcp"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.302279047.ports.1889509032", "80"),
+					resource.TestCheckResourceAttr(
+						"cloudstack_firewall.foo", "rule.302279047.ports.3638101695", "443"),
 				),
 			},
 		},
@@ -110,13 +124,13 @@ func testAccCheckCloudStackFirewallRulesExist(n string) resource.TestCheckFunc {
 			return fmt.Errorf("No firewall ID is set")
 		}
 
-		for k, uuid := range rs.Primary.Attributes {
+		for k, id := range rs.Primary.Attributes {
 			if !strings.Contains(k, ".uuids.") || strings.HasSuffix(k, ".uuids.#") {
 				continue
 			}
 
 			cs := testAccProvider.Meta().(*cloudstack.CloudStackClient)
-			_, count, err := cs.Firewall.GetFirewallRuleByID(uuid)
+			_, count, err := cs.Firewall.GetFirewallRuleByID(id)
 
 			if err != nil {
 				return err
@@ -143,12 +157,12 @@ func testAccCheckCloudStackFirewallDestroy(s *terraform.State) error {
 			return fmt.Errorf("No instance ID is set")
 		}
 
-		for k, uuid := range rs.Primary.Attributes {
+		for k, id := range rs.Primary.Attributes {
 			if !strings.Contains(k, ".uuids.") || strings.HasSuffix(k, ".uuids.#") {
 				continue
 			}
 
-			_, _, err := cs.Firewall.GetFirewallRuleByID(uuid)
+			_, _, err := cs.Firewall.GetFirewallRuleByID(id)
 			if err == nil {
 				return fmt.Errorf("Firewall rule %s still exists", rs.Primary.ID)
 			}
@@ -160,10 +174,16 @@ func testAccCheckCloudStackFirewallDestroy(s *terraform.State) error {
 
 var testAccCloudStackFirewall_basic = fmt.Sprintf(`
 resource "cloudstack_firewall" "foo" {
-  ipaddress = "%s"
+  ip_address_id = "%s"
 
   rule {
-    source_cidr = "10.0.0.0/24"
+    cidr_list = ["10.0.0.0/24"]
+    protocol = "tcp"
+    ports = ["8080"]
+  }
+
+  rule {
+    cidr_list = ["10.0.0.0/24"]
     protocol = "tcp"
     ports = ["80", "1000-2000"]
   }
@@ -171,16 +191,22 @@ resource "cloudstack_firewall" "foo" {
 
 var testAccCloudStackFirewall_update = fmt.Sprintf(`
 resource "cloudstack_firewall" "foo" {
-  ipaddress = "%s"
+  ip_address_id = "%s"
 
   rule {
-    source_cidr = "10.0.0.0/24"
+    cidr_list = ["10.0.0.0/24", "10.0.1.0/24"]
+    protocol = "tcp"
+    ports = ["8080"]
+  }
+
+  rule {
+    cidr_list = ["10.0.0.0/24"]
     protocol = "tcp"
     ports = ["80", "1000-2000"]
   }
 
   rule {
-    source_cidr = "172.16.100.0/24"
+    cidr_list = ["172.16.100.0/24"]
     protocol = "tcp"
     ports = ["80", "443"]
   }

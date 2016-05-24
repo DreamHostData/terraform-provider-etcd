@@ -3,7 +3,6 @@ package google
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"google.golang.org/api/compute/v1"
@@ -28,6 +27,18 @@ func resourceComputeAddress() *schema.Resource {
 				Computed: true,
 			},
 
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
+			"region": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"self_link": &schema.Schema{
 				Type:     schema.TypeString,
 				Computed: true,
@@ -39,11 +50,20 @@ func resourceComputeAddress() *schema.Resource {
 func resourceComputeAddressCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Build the address parameter
 	addr := &compute.Address{Name: d.Get("name").(string)}
-	log.Printf("[DEBUG] Address insert request: %#v", addr)
 	op, err := config.clientCompute.Addresses.Insert(
-		config.Project, config.Region, addr).Do()
+		project, region, addr).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating address: %s", err)
 	}
@@ -51,28 +71,9 @@ func resourceComputeAddressCreate(d *schema.ResourceData, meta interface{}) erro
 	// It probably maybe worked, so store the ID now
 	d.SetId(addr.Name)
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Project: config.Project,
-		Region:  config.Region,
-		Type:    OperationWaitRegion,
-	}
-	state := w.Conf()
-	state.Timeout = 2 * time.Minute
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	err = computeOperationWaitRegion(config, op, region, "Creating Address")
 	if err != nil {
-		return fmt.Errorf("Error waiting for address to create: %s", err)
-	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// The resource didn't actually create
-		d.SetId("")
-
-		// Return the error
-		return OperationError(*op.Error)
+		return err
 	}
 
 	return resourceComputeAddressRead(d, meta)
@@ -81,11 +82,22 @@ func resourceComputeAddressCreate(d *schema.ResourceData, meta interface{}) erro
 func resourceComputeAddressRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	addr, err := config.clientCompute.Addresses.Get(
-		config.Project, config.Region, d.Id()).Do()
+		project, region, d.Id()).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
 			// The resource doesn't exist anymore
+			log.Printf("[WARN] Removing Address %q because it's gone", d.Get("name").(string))
 			d.SetId("")
 
 			return nil
@@ -103,33 +115,27 @@ func resourceComputeAddressRead(d *schema.ResourceData, meta interface{}) error 
 func resourceComputeAddressDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	region, err := getRegion(d, config)
+	if err != nil {
+		return err
+	}
+
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Delete the address
 	log.Printf("[DEBUG] address delete request")
 	op, err := config.clientCompute.Addresses.Delete(
-		config.Project, config.Region, d.Id()).Do()
+		project, region, d.Id()).Do()
 	if err != nil {
 		return fmt.Errorf("Error deleting address: %s", err)
 	}
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Project: config.Project,
-		Region:  config.Region,
-		Type:    OperationWaitRegion,
-	}
-	state := w.Conf()
-	state.Timeout = 2 * time.Minute
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	err = computeOperationWaitRegion(config, op, region, "Deleting Address")
 	if err != nil {
-		return fmt.Errorf("Error waiting for address to delete: %s", err)
-	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// Return the error
-		return OperationError(*op.Error)
+		return err
 	}
 
 	d.SetId("")

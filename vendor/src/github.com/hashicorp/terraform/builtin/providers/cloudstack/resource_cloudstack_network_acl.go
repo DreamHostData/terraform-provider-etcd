@@ -1,6 +1,7 @@
 package cloudstack
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -29,10 +30,18 @@ func resourceCloudStackNetworkACL() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"vpc": &schema.Schema{
+			"vpc_id": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
+			},
+
+			"vpc": &schema.Schema{
+				Type:       schema.TypeString,
+				Optional:   true,
+				ForceNew:   true,
+				Deprecated: "Please use the `vpc_id` field instead",
 			},
 		},
 	}
@@ -43,8 +52,16 @@ func resourceCloudStackNetworkACLCreate(d *schema.ResourceData, meta interface{}
 
 	name := d.Get("name").(string)
 
-	// Retrieve the vpc UUID
-	vpcid, e := retrieveUUID(cs, "vpc", d.Get("vpc").(string))
+	vpc, ok := d.GetOk("vpc_id")
+	if !ok {
+		vpc, ok = d.GetOk("vpc")
+	}
+	if !ok {
+		return errors.New("Either `vpc_id` or [deprecated] `vpc` must be provided.")
+	}
+
+	// Retrieve the vpc ID
+	vpcid, e := retrieveID(cs, "vpc", vpc.(string))
 	if e != nil {
 		return e.Error()
 	}
@@ -73,8 +90,22 @@ func resourceCloudStackNetworkACLCreate(d *schema.ResourceData, meta interface{}
 func resourceCloudStackNetworkACLRead(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
+	vpc, ok := d.GetOk("vpc_id")
+	if !ok {
+		vpc, ok = d.GetOk("vpc")
+	}
+	if !ok {
+		return errors.New("Either `vpc_id` or [deprecated] `vpc` must be provided.")
+	}
+
+	// Retrieve the vpc ID
+	vpcid, e := retrieveID(cs, "vpc", vpc.(string))
+	if e != nil {
+		return e.Error()
+	}
+
 	// Get the network ACL list details
-	f, count, err := cs.NetworkACL.GetNetworkACLListByID(d.Id())
+	f, count, err := cs.NetworkACL.GetNetworkACLListByID(d.Id(), cloudstack.WithVPCID(vpcid))
 	if err != nil {
 		if count == 0 {
 			log.Printf(
@@ -88,14 +119,7 @@ func resourceCloudStackNetworkACLRead(d *schema.ResourceData, meta interface{}) 
 
 	d.Set("name", f.Name)
 	d.Set("description", f.Description)
-
-	// Get the VPC details
-	v, _, err := cs.VPC.GetVPCByID(f.Vpcid)
-	if err != nil {
-		return err
-	}
-
-	setValueOrUUID(d, "vpc", v.Name, v.Id)
+	d.Set("vpc_id", f.Vpcid)
 
 	return nil
 }
@@ -107,9 +131,11 @@ func resourceCloudStackNetworkACLDelete(d *schema.ResourceData, meta interface{}
 	p := cs.NetworkACL.NewDeleteNetworkACLListParams(d.Id())
 
 	// Delete the network ACL list
-	_, err := cs.NetworkACL.DeleteNetworkACLList(p)
+	_, err := Retry(3, func() (interface{}, error) {
+		return cs.NetworkACL.DeleteNetworkACLList(p)
+	})
 	if err != nil {
-		// This is a very poor way to be told the UUID does no longer exist :(
+		// This is a very poor way to be told the ID does no longer exist :(
 		if strings.Contains(err.Error(), fmt.Sprintf(
 			"Invalid parameter id value=%s due to incorrect long value format, "+
 				"or entity does not exist", d.Id())) {

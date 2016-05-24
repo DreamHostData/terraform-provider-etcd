@@ -3,7 +3,6 @@ package google
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"google.golang.org/api/compute/v1"
@@ -35,8 +34,25 @@ func resourceComputeDisk() *schema.Resource {
 				ForceNew: true,
 			},
 
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"size": &schema.Schema{
 				Type:     schema.TypeInt,
+				Optional: true,
+				ForceNew: true,
+			},
+
+			"self_link": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"snapshot": &schema.Schema{
+				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
@@ -46,17 +62,6 @@ func resourceComputeDisk() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
-
-			"snapshot": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
-
-			"self_link": &schema.Schema{
-				Type:     schema.TypeString,
-				Computed: true,
-			},
 		},
 	}
 }
@@ -64,10 +69,15 @@ func resourceComputeDisk() *schema.Resource {
 func resourceComputeDiskCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Get the zone
 	log.Printf("[DEBUG] Loading zone: %s", d.Get("zone").(string))
 	zone, err := config.clientCompute.Zones.Get(
-		config.Project, d.Get("zone").(string)).Do()
+		project, d.Get("zone").(string)).Do()
 	if err != nil {
 		return fmt.Errorf(
 			"Error loading zone '%s': %s", d.Get("zone").(string), err)
@@ -108,7 +118,7 @@ func resourceComputeDiskCreate(d *schema.ResourceData, meta interface{}) error {
 		snapshotName := v.(string)
 		log.Printf("[DEBUG] Loading snapshot: %s", snapshotName)
 		snapshotData, err := config.clientCompute.Snapshots.Get(
-			config.Project, snapshotName).Do()
+			project, snapshotName).Do()
 
 		if err != nil {
 			return fmt.Errorf(
@@ -120,7 +130,7 @@ func resourceComputeDiskCreate(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	op, err := config.clientCompute.Disks.Insert(
-		config.Project, d.Get("zone").(string), disk).Do()
+		project, d.Get("zone").(string), disk).Do()
 	if err != nil {
 		return fmt.Errorf("Error creating disk: %s", err)
 	}
@@ -128,47 +138,26 @@ func resourceComputeDiskCreate(d *schema.ResourceData, meta interface{}) error {
 	// It probably maybe worked, so store the ID now
 	d.SetId(disk.Name)
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Project: config.Project,
-		Zone:    d.Get("zone").(string),
-		Type:    OperationWaitZone,
-	}
-	state := w.Conf()
-
-	if disk.SourceSnapshot != "" {
-		//creating disk from snapshot takes some time
-		state.Timeout = 10 * time.Minute
-	} else {
-		state.Timeout = 2 * time.Minute
-	}
-
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	err = computeOperationWaitZone(config, op, d.Get("zone").(string), "Creating Disk")
 	if err != nil {
-		return fmt.Errorf("Error waiting for disk to create: %s", err)
+		return err
 	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// The resource didn't actually create
-		d.SetId("")
-
-		// Return the error
-		return OperationError(*op.Error)
-	}
-
 	return resourceComputeDiskRead(d, meta)
 }
 
 func resourceComputeDiskRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	disk, err := config.clientCompute.Disks.Get(
-		config.Project, d.Get("zone").(string), d.Id()).Do()
+		project, d.Get("zone").(string), d.Id()).Do()
 	if err != nil {
 		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
+			log.Printf("[WARN] Removing Disk %q because it's gone", d.Get("name").(string))
 			// The resource doesn't exist anymore
 			d.SetId("")
 
@@ -186,32 +175,28 @@ func resourceComputeDiskRead(d *schema.ResourceData, meta interface{}) error {
 func resourceComputeDiskDelete(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
+	project, err := getProject(d, config)
+	if err != nil {
+		return err
+	}
+
 	// Delete the disk
 	op, err := config.clientCompute.Disks.Delete(
-		config.Project, d.Get("zone").(string), d.Id()).Do()
+		project, d.Get("zone").(string), d.Id()).Do()
 	if err != nil {
+		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
+			log.Printf("[WARN] Removing Disk %q because it's gone", d.Get("name").(string))
+			// The resource doesn't exist anymore
+			d.SetId("")
+			return nil
+		}
 		return fmt.Errorf("Error deleting disk: %s", err)
 	}
 
-	// Wait for the operation to complete
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Project: config.Project,
-		Zone:    d.Get("zone").(string),
-		Type:    OperationWaitZone,
-	}
-	state := w.Conf()
-	state.Timeout = 2 * time.Minute
-	state.MinTimeout = 1 * time.Second
-	opRaw, err := state.WaitForState()
+	zone := d.Get("zone").(string)
+	err = computeOperationWaitZone(config, op, zone, "Creating Disk")
 	if err != nil {
-		return fmt.Errorf("Error waiting for disk to delete: %s", err)
-	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// Return the error
-		return OperationError(*op.Error)
+		return err
 	}
 
 	d.SetId("")

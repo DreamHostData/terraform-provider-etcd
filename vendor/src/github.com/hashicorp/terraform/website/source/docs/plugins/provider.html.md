@@ -58,14 +58,14 @@ the framework beforehand, but it goes to show how expressive the framework
 can be.
 
 The GoDoc for `helper/schema` can be
-[found here](http://godoc.org/github.com/hashicorp/terraform/helper/schema).
+[found here](https://godoc.org/github.com/hashicorp/terraform/helper/schema).
 This is API-level documentation but will be extremely important
 for you going forward.
 
 ## Provider
 
 The first thing to do in your plugin is to create the
-[schema.Provider](http://godoc.org/github.com/hashicorp/terraform/helper/schema#Provider) structure.
+[schema.Provider](https://godoc.org/github.com/hashicorp/terraform/helper/schema#Provider) structure.
 This structure implements the `ResourceProvider` interface. We
 recommend creating this structure in a function to make testing easier
 later. Example:
@@ -86,13 +86,13 @@ are documented within the godoc, but a brief overview is here as well:
 
   * `ResourcesMap` - The map of resources that this provider supports.
       All keys are resource names and the values are the
-      [schema.Resource](http://godoc.org/github.com/hashicorp/terraform/helper/schema#Resource) structures implementing this resource.
+      [schema.Resource](https://godoc.org/github.com/hashicorp/terraform/helper/schema#Resource) structures implementing this resource.
 
   * `ConfigureFunc` - This function callback is used to configure the
       provider. This function should do things such as initialize any API
       clients, validate API keys, etc. The `interface{}` return value of
       this function is the `meta` parameter that will be passed into all
-      resource [CRUD](http://en.wikipedia.org/wiki/Create,_read,_update_and_delete)
+      resource [CRUD](https://en.wikipedia.org/wiki/Create,_read,_update_and_delete)
       functions. In general, the returned value is a configuration structure
       or a client.
 
@@ -102,7 +102,7 @@ an error if it is invalid. An example test is shown below:
 
 ```
 func TestProvider(t *testing.T) {
-	if err := Provider().InternalValidate(); err != nil {
+	if err := Provider().(*schema.Provider).InternalValidate(); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 }
@@ -127,7 +127,7 @@ func resourceComputeAddress() *schema.Resource {
 ```
 
 Resources are described using the
-[schema.Resource](http://godoc.org/github.com/hashicorp/terraform/helper/schema#Resource)
+[schema.Resource](https://godoc.org/github.com/hashicorp/terraform/helper/schema#Resource)
 structure. This structure has the following fields:
 
   * `Schema` - The configuration schema for this resource. Schemas are
@@ -138,11 +138,19 @@ structure. This structure has the following fields:
       optional field is `Update`. If your resource doesn't support update, then
       you may keep that field nil.
 
+  * `Importer` - If this is non-nil, then this resource is
+    [importable](/docs/import/importability.html). It is recommended to
+    implement this.
+
 The CRUD operations in more detail, along with their contracts:
 
   * `Create` - This is called to create a new instance of the resource.
       Terraform guarantees that an existing ID is not set on the resource
-      data. That is, you're working with a new resource.
+      data. That is, you're working with a new resource. Therefore, you are
+      responsible for calling `SetId` on your `schema.ResourceData` using a
+      value suitable for your resource. This ensures whatever resource
+      state you set on `schema.ResourceData` will be persisted in local state.
+      If you neglect to `SetId`, no resource state will be persisted.
 
   * `Read` - This is called to resync the local state with the remote state.
       Terraform guarantees that an existing ID will be set. This ID should be
@@ -160,7 +168,8 @@ The CRUD operations in more detail, along with their contracts:
 
   * `Exists` - This is called to verify a resource still exists. It is
       called prior to `Read`, and lowers the burden of `Read` to be able
-      to assume the resource exists.
+      to assume the resource exists. If the resource is no longer present in
+      remote state,  calling `SetId` with an empty string will signal its removal.
 
 ## Schemas
 
@@ -184,7 +193,7 @@ best practices. A good starting place is the
 
 The parameter to provider configuration as well as all the CRUD operations
 on a resource is a
-[schema.ResourceData](http://godoc.org/github.com/hashicorp/terraform/helper/schema#ResourceData).
+[schema.ResourceData](https://godoc.org/github.com/hashicorp/terraform/helper/schema#ResourceData).
 This structure is used to query configurations as well as to set information
 about the resource such as its ID, connection information, and computed
 attributes.

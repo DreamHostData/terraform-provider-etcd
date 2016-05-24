@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/terraform/config"
 )
 
@@ -40,6 +41,23 @@ func TestStateAddModule(t *testing.T) {
 				[]string{"root", "foo", "bar"},
 			},
 		},
+		// Same last element, different middle element
+		{
+			[][]string{
+				[]string{"root", "foo", "bar"}, // This one should sort after...
+				[]string{"root", "foo"},
+				[]string{"root"},
+				[]string{"root", "bar", "bar"}, // ...this one.
+				[]string{"root", "bar"},
+			},
+			[][]string{
+				[]string{"root"},
+				[]string{"root", "bar"},
+				[]string{"root", "foo"},
+				[]string{"root", "bar", "bar"},
+				[]string{"root", "foo", "bar"},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -56,6 +74,36 @@ func TestStateAddModule(t *testing.T) {
 		if !reflect.DeepEqual(actual, tc.Out) {
 			t.Fatalf("In: %#v\n\nOut: %#v", tc.In, actual)
 		}
+	}
+}
+
+func TestStateOutputTypeRoundTrip(t *testing.T) {
+	state := &State{
+		Modules: []*ModuleState{
+			&ModuleState{
+				Path: RootModulePath,
+				Outputs: map[string]*OutputState{
+					"string_output": &OutputState{
+						Value: "String Value",
+						Type:  "string",
+					},
+				},
+			},
+		},
+	}
+
+	buf := new(bytes.Buffer)
+	if err := WriteState(state, buf); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	roundTripped, err := ReadState(buf)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !reflect.DeepEqual(state, roundTripped) {
+		t.Fatalf("bad: %#v", roundTripped)
 	}
 }
 
@@ -76,6 +124,28 @@ func TestStateModuleOrphans(t *testing.T) {
 
 	config := testModule(t, "state-module-orphans").Config()
 	actual := state.ModuleOrphans(RootModulePath, config)
+	expected := [][]string{
+		[]string{RootModuleName, "foo"},
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: %#v", actual)
+	}
+}
+
+func TestStateModuleOrphans_nested(t *testing.T) {
+	state := &State{
+		Modules: []*ModuleState{
+			&ModuleState{
+				Path: RootModulePath,
+			},
+			&ModuleState{
+				Path: []string{RootModuleName, "foo", "bar"},
+			},
+		},
+	}
+
+	actual := state.ModuleOrphans(RootModulePath, nil)
 	expected := [][]string{
 		[]string{RootModuleName, "foo"},
 	}
@@ -108,6 +178,60 @@ func TestStateModuleOrphans_nilConfig(t *testing.T) {
 
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("bad: %#v", actual)
+	}
+}
+
+func TestStateModuleOrphans_deepNestedNilConfig(t *testing.T) {
+	state := &State{
+		Modules: []*ModuleState{
+			&ModuleState{
+				Path: RootModulePath,
+			},
+			&ModuleState{
+				Path: []string{RootModuleName, "parent", "childfoo"},
+			},
+			&ModuleState{
+				Path: []string{RootModuleName, "parent", "childbar"},
+			},
+		},
+	}
+
+	actual := state.ModuleOrphans(RootModulePath, nil)
+	expected := [][]string{
+		[]string{RootModuleName, "parent"},
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: %#v", actual)
+	}
+}
+
+func TestStateDeepCopy(t *testing.T) {
+	cases := []struct {
+		One, Two *State
+		F        func(*State) interface{}
+	}{
+		// Version
+		{
+			&State{Version: 5},
+			&State{Version: 5},
+			func(s *State) interface{} { return s.Version },
+		},
+
+		// TFVersion
+		{
+			&State{TFVersion: "5"},
+			&State{TFVersion: "5"},
+			func(s *State) interface{} { return s.TFVersion },
+		},
+	}
+
+	for i, tc := range cases {
+		actual := tc.F(tc.One.DeepCopy())
+		expected := tc.F(tc.Two)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("Bad: %d\n\n%s\n\n%s", i, actual, expected)
+		}
 	}
 }
 
@@ -166,6 +290,43 @@ func TestStateEqual(t *testing.T) {
 				},
 			},
 		},
+
+		// Meta differs
+		{
+			false,
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Primary: &InstanceState{
+									Meta: map[string]string{
+										"schema_version": "1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Primary: &InstanceState{
+									Meta: map[string]string{
+										"schema_version": "2",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for i, tc := range cases {
@@ -202,6 +363,41 @@ func TestStateIncrementSerialMaybe(t *testing.T) {
 			},
 			1,
 		},
+		"S2 is different, but only via Instance Metadata": {
+			&State{
+				Serial: 3,
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Primary: &InstanceState{
+									Meta: map[string]string{},
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Serial: 3,
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Primary: &InstanceState{
+									Meta: map[string]string{
+										"schema_version": "1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			4,
+		},
 		"S1 serial is higher": {
 			&State{Serial: 5},
 			&State{
@@ -212,12 +408,288 @@ func TestStateIncrementSerialMaybe(t *testing.T) {
 			},
 			5,
 		},
+		"S2 has a different TFVersion": {
+			&State{TFVersion: "0.1"},
+			&State{TFVersion: "0.2"},
+			1,
+		},
 	}
 
 	for name, tc := range cases {
 		tc.S1.IncrementSerialMaybe(tc.S2)
 		if tc.S1.Serial != tc.Serial {
 			t.Fatalf("Bad: %s\nGot: %d", name, tc.S1.Serial)
+		}
+	}
+}
+
+func TestStateRemove(t *testing.T) {
+	cases := map[string]struct {
+		Address  string
+		One, Two *State
+	}{
+		"simple resource": {
+			"test_instance.foo",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path:      rootModulePath,
+						Resources: map[string]*ResourceState{},
+					},
+				},
+			},
+		},
+
+		"single instance": {
+			"test_instance.foo.primary",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path:      rootModulePath,
+						Resources: map[string]*ResourceState{},
+					},
+				},
+			},
+		},
+
+		"single instance in multi-count": {
+			"test_instance.foo[0]",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo.0": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+
+							"test_instance.foo.1": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo.1": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+
+		"single resource, multi-count": {
+			"test_instance.foo",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo.0": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+
+							"test_instance.foo.1": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path:      rootModulePath,
+						Resources: map[string]*ResourceState{},
+					},
+				},
+			},
+		},
+
+		"full module": {
+			"module.foo",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+
+					&ModuleState{
+						Path: []string{"root", "foo"},
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+
+							"test_instance.bar": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+
+		"module and children": {
+			"module.foo",
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+
+					&ModuleState{
+						Path: []string{"root", "foo"},
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+
+							"test_instance.bar": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+
+					&ModuleState{
+						Path: []string{"root", "foo", "bar"},
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+
+							"test_instance.bar": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+			&State{
+				Modules: []*ModuleState{
+					&ModuleState{
+						Path: rootModulePath,
+						Resources: map[string]*ResourceState{
+							"test_instance.foo": &ResourceState{
+								Type: "test_instance",
+								Primary: &InstanceState{
+									ID: "foo",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for k, tc := range cases {
+		if err := tc.One.Remove(tc.Address); err != nil {
+			t.Fatalf("bad: %s\n\n%s", k, err)
+		}
+
+		if !tc.One.Equal(tc.Two) {
+			t.Fatalf("Bad: %s\n\n%s\n\n%s", k, tc.One.String(), tc.Two.String())
 		}
 	}
 }
@@ -366,6 +838,103 @@ func TestResourceStateTaint(t *testing.T) {
 	}
 }
 
+func TestResourceStateUntaint(t *testing.T) {
+	cases := map[string]struct {
+		Input          *ResourceState
+		Index          func() int
+		ExpectedOutput *ResourceState
+		ExpectedErrMsg string
+	}{
+		"no primary, no tainted, err": {
+			Input:          &ResourceState{},
+			ExpectedOutput: &ResourceState{},
+			ExpectedErrMsg: "Nothing to untaint",
+		},
+
+		"one tainted, no primary": {
+			Input: &ResourceState{
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "foo"},
+				},
+			},
+			ExpectedOutput: &ResourceState{
+				Primary: &InstanceState{ID: "foo"},
+				Tainted: []*InstanceState{},
+			},
+		},
+
+		"one tainted, existing primary error": {
+			Input: &ResourceState{
+				Primary: &InstanceState{ID: "foo"},
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "foo"},
+				},
+			},
+			ExpectedErrMsg: "Resource has a primary",
+		},
+
+		"multiple tainted, no index": {
+			Input: &ResourceState{
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "bar"},
+					&InstanceState{ID: "foo"},
+				},
+			},
+			ExpectedErrMsg: "please specify an index",
+		},
+
+		"multiple tainted, with index": {
+			Input: &ResourceState{
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "bar"},
+					&InstanceState{ID: "foo"},
+				},
+			},
+			Index: func() int { return 1 },
+			ExpectedOutput: &ResourceState{
+				Primary: &InstanceState{ID: "foo"},
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "bar"},
+				},
+			},
+		},
+
+		"index out of bounds error": {
+			Input: &ResourceState{
+				Tainted: []*InstanceState{
+					&InstanceState{ID: "bar"},
+					&InstanceState{ID: "foo"},
+				},
+			},
+			Index:          func() int { return 2 },
+			ExpectedErrMsg: "out of range",
+		},
+	}
+
+	for k, tc := range cases {
+		index := -1
+		if tc.Index != nil {
+			index = tc.Index()
+		}
+		err := tc.Input.Untaint(index)
+		if tc.ExpectedErrMsg == "" && err != nil {
+			t.Fatalf("[%s] unexpected err: %s", k, err)
+		}
+		if tc.ExpectedErrMsg != "" {
+			if strings.Contains(err.Error(), tc.ExpectedErrMsg) {
+				continue
+			}
+			t.Fatalf("[%s] expected err: %s to contain: %s",
+				k, err, tc.ExpectedErrMsg)
+		}
+		if !reflect.DeepEqual(tc.Input, tc.ExpectedOutput) {
+			t.Fatalf(
+				"Failure: %s\n\nExpected: %#v\n\nGot: %#v",
+				k, tc.ExpectedOutput, tc.Input)
+		}
+	}
+}
+
 func TestInstanceStateEmpty(t *testing.T) {
 	cases := map[string]struct {
 		In     *InstanceState
@@ -483,6 +1052,34 @@ func TestStateEmpty(t *testing.T) {
 	}
 }
 
+func TestStateFromFutureTerraform(t *testing.T) {
+	cases := []struct {
+		In     string
+		Result bool
+	}{
+		{
+			"",
+			false,
+		},
+		{
+			"0.1",
+			false,
+		},
+		{
+			"999.15.1",
+			true,
+		},
+	}
+
+	for _, tc := range cases {
+		state := &State{TFVersion: tc.In}
+		actual := state.FromFutureTerraform()
+		if actual != tc.Result {
+			t.Fatalf("%s: bad: %v", tc.In, actual)
+		}
+	}
+}
+
 func TestStateIsRemote(t *testing.T) {
 	cases := []struct {
 		In     *State
@@ -596,16 +1193,72 @@ func TestInstanceState_MergeDiff_nilDiff(t *testing.T) {
 	}
 }
 
+func TestReadUpgradeStateV1toV2(t *testing.T) {
+	// ReadState should transparently detect the old version but will upgrade
+	// it on Write.
+	actual, err := ReadState(strings.NewReader(testV1State))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	buf := new(bytes.Buffer)
+	if err := WriteState(actual, buf); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if actual.Version != 2 {
+		t.Fatalf("bad: State version not incremented; is %d", actual.Version)
+	}
+
+	roundTripped, err := ReadState(buf)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !reflect.DeepEqual(actual, roundTripped) {
+		t.Fatalf("bad: %#v", actual)
+	}
+}
+
+func TestReadUpgradeStateV1toV2_outputs(t *testing.T) {
+	// ReadState should transparently detect the old version but will upgrade
+	// it on Write.
+	actual, err := ReadState(strings.NewReader(testV1StateWithOutputs))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	buf := new(bytes.Buffer)
+	if err := WriteState(actual, buf); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if actual.Version != 2 {
+		t.Fatalf("bad: State version not incremented; is %d", actual.Version)
+	}
+
+	roundTripped, err := ReadState(buf)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !reflect.DeepEqual(actual, roundTripped) {
+		spew.Config.DisableMethods = true
+		t.Fatalf("bad:\n%s\n\nround tripped:\n%s\n", spew.Sdump(actual), spew.Sdump(roundTripped))
+		spew.Config.DisableMethods = false
+	}
+}
+
 func TestReadUpgradeState(t *testing.T) {
-	state := &StateV1{
-		Resources: map[string]*ResourceStateV1{
-			"foo": &ResourceStateV1{
+	state := &StateV0{
+		Resources: map[string]*ResourceStateV0{
+			"foo": &ResourceStateV0{
 				ID: "bar",
 			},
 		},
 	}
 	buf := new(bytes.Buffer)
-	if err := testWriteStateV1(state, buf); err != nil {
+	if err := testWriteStateV0(state, buf); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
@@ -616,7 +1269,7 @@ func TestReadUpgradeState(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	upgraded, err := upgradeV1State(state)
+	upgraded, err := state.upgrade()
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -659,9 +1312,6 @@ func TestReadWriteState(t *testing.T) {
 		},
 	}
 
-	// Checksum before the write
-	chksum := checksumStruct(t, state)
-
 	buf := new(bytes.Buffer)
 	if err := WriteState(state, buf); err != nil {
 		t.Fatalf("err: %s", err)
@@ -670,12 +1320,6 @@ func TestReadWriteState(t *testing.T) {
 	// Verify that the version and serial are set
 	if state.Version != StateVersion {
 		t.Fatalf("bad version number: %d", state.Version)
-	}
-
-	// Checksum after the write
-	chksumAfter := checksumStruct(t, state)
-	if chksumAfter != chksum {
-		t.Fatalf("structure changed during serialization!")
 	}
 
 	actual, err := ReadState(buf)
@@ -711,20 +1355,115 @@ func TestReadStateNewVersion(t *testing.T) {
 	}
 }
 
-func TestUpgradeV1State(t *testing.T) {
-	old := &StateV1{
+func TestReadStateTFVersion(t *testing.T) {
+	type tfVersion struct {
+		Version   int    `json:"version"`
+		TFVersion string `json:"terraform_version"`
+	}
+
+	cases := []struct {
+		Written string
+		Read    string
+		Err     bool
+	}{
+		{
+			"0.0.0",
+			"0.0.0",
+			false,
+		},
+		{
+			"",
+			"",
+			false,
+		},
+		{
+			"bad",
+			"",
+			true,
+		},
+	}
+
+	for _, tc := range cases {
+		buf, err := json.Marshal(&tfVersion{
+			Version:   2,
+			TFVersion: tc.Written,
+		})
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+
+		s, err := ReadState(bytes.NewReader(buf))
+		if (err != nil) != tc.Err {
+			t.Fatalf("%s: err: %s", tc.Written, err)
+		}
+		if err != nil {
+			continue
+		}
+
+		if s.TFVersion != tc.Read {
+			t.Fatalf("%s: bad: %s", tc.Written, s.TFVersion)
+		}
+	}
+}
+
+func TestWriteStateTFVersion(t *testing.T) {
+	cases := []struct {
+		Write string
+		Read  string
+		Err   bool
+	}{
+		{
+			"0.0.0",
+			"0.0.0",
+			false,
+		},
+		{
+			"",
+			"",
+			false,
+		},
+		{
+			"bad",
+			"",
+			true,
+		},
+	}
+
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		err := WriteState(&State{TFVersion: tc.Write}, &buf)
+		if (err != nil) != tc.Err {
+			t.Fatalf("%s: err: %s", tc.Write, err)
+		}
+		if err != nil {
+			continue
+		}
+
+		s, err := ReadState(&buf)
+		if err != nil {
+			t.Fatalf("%s: err: %s", tc.Write, err)
+		}
+
+		if s.TFVersion != tc.Read {
+			t.Fatalf("%s: bad: %s", tc.Write, s.TFVersion)
+		}
+	}
+}
+
+func TestUpgradeV0State(t *testing.T) {
+	old := &StateV0{
 		Outputs: map[string]string{
 			"ip": "127.0.0.1",
 		},
-		Resources: map[string]*ResourceStateV1{
-			"foo": &ResourceStateV1{
+		Resources: map[string]*ResourceStateV0{
+			"foo": &ResourceStateV0{
 				Type: "test_resource",
 				ID:   "bar",
 				Attributes: map[string]string{
 					"key": "val",
 				},
 			},
-			"bar": &ResourceStateV1{
+			"bar": &ResourceStateV0{
 				Type: "test_resource",
 				ID:   "1234",
 				Attributes: map[string]string{
@@ -736,7 +1475,7 @@ func TestUpgradeV1State(t *testing.T) {
 			"bar": struct{}{},
 		},
 	}
-	state, err := upgradeV1State(old)
+	state, err := old.upgrade()
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -749,7 +1488,7 @@ func TestUpgradeV1State(t *testing.T) {
 	if len(root.Outputs) != 1 {
 		t.Fatalf("bad outputs: %v", root.Outputs)
 	}
-	if root.Outputs["ip"] != "127.0.0.1" {
+	if root.Outputs["ip"].Value != "127.0.0.1" {
 		t.Fatalf("bad outputs: %v", root.Outputs)
 	}
 
@@ -784,3 +1523,134 @@ func TestUpgradeV1State(t *testing.T) {
 		t.Fatalf("bad: %#v", bt)
 	}
 }
+
+func TestParseResourceStateKey(t *testing.T) {
+	cases := []struct {
+		Input       string
+		Expected    *ResourceStateKey
+		ExpectedErr bool
+	}{
+		{
+			Input: "aws_instance.foo.3",
+			Expected: &ResourceStateKey{
+				Mode:  config.ManagedResourceMode,
+				Type:  "aws_instance",
+				Name:  "foo",
+				Index: 3,
+			},
+		},
+		{
+			Input: "aws_instance.foo.0",
+			Expected: &ResourceStateKey{
+				Mode:  config.ManagedResourceMode,
+				Type:  "aws_instance",
+				Name:  "foo",
+				Index: 0,
+			},
+		},
+		{
+			Input: "aws_instance.foo",
+			Expected: &ResourceStateKey{
+				Mode:  config.ManagedResourceMode,
+				Type:  "aws_instance",
+				Name:  "foo",
+				Index: -1,
+			},
+		},
+		{
+			Input: "data.aws_ami.foo",
+			Expected: &ResourceStateKey{
+				Mode:  config.DataResourceMode,
+				Type:  "aws_ami",
+				Name:  "foo",
+				Index: -1,
+			},
+		},
+		{
+			Input:       "aws_instance.foo.malformed",
+			ExpectedErr: true,
+		},
+		{
+			Input:       "aws_instance.foo.malformedwithnumber.123",
+			ExpectedErr: true,
+		},
+		{
+			Input:       "malformed",
+			ExpectedErr: true,
+		},
+	}
+	for _, tc := range cases {
+		rsk, err := ParseResourceStateKey(tc.Input)
+		if rsk != nil && tc.Expected != nil && !rsk.Equal(tc.Expected) {
+			t.Fatalf("%s: expected %s, got %s", tc.Input, tc.Expected, rsk)
+		}
+		if (err != nil) != tc.ExpectedErr {
+			t.Fatalf("%s: expected err: %t, got %s", tc.Input, tc.ExpectedErr, err)
+		}
+	}
+}
+
+const testV1State = `{
+    "version": 1,
+    "serial": 9,
+    "remote": {
+        "type": "http",
+        "config": {
+            "url": "http://my-cool-server.com/"
+        }
+    },
+    "modules": [
+        {
+            "path": [
+                "root"
+            ],
+            "outputs": null,
+            "resources": {
+                "foo": {
+                    "type": "",
+                    "primary": {
+                        "id": "bar"
+                    }
+                }
+            },
+            "depends_on": [
+                "aws_instance.bar"
+            ]
+        }
+    ]
+}
+`
+
+const testV1StateWithOutputs = `{
+    "version": 1,
+    "serial": 9,
+    "remote": {
+        "type": "http",
+        "config": {
+            "url": "http://my-cool-server.com/"
+        }
+    },
+    "modules": [
+        {
+            "path": [
+                "root"
+            ],
+            "outputs": {
+            	"foo": "bar",
+            	"baz": "foo"
+            },
+            "resources": {
+                "foo": {
+                    "type": "",
+                    "primary": {
+                        "id": "bar"
+                    }
+                }
+            },
+            "depends_on": [
+                "aws_instance.bar"
+            ]
+        }
+    ]
+}
+`

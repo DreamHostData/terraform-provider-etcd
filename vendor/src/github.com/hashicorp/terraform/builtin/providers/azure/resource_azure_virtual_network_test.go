@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/management"
+	"github.com/Azure/azure-sdk-for-go/management/virtualnetwork"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
-	"github.com/svanharmelen/azure-sdk-for-go/management/virtualnetwork"
 )
 
 func TestAccAzureVirtualNetwork_basic(t *testing.T) {
@@ -137,8 +138,8 @@ func testAccCheckAzureVirtualNetworkExists(
 			return fmt.Errorf("No Virtual Network ID is set")
 		}
 
-		mc := testAccProvider.Meta().(*Client).mgmtClient
-		nc, err := virtualnetwork.NewClient(mc).GetVirtualNetworkConfiguration()
+		vnetClient := testAccProvider.Meta().(*Client).vnetClient
+		nc, err := vnetClient.GetVirtualNetworkConfiguration()
 		if err != nil {
 			return err
 		}
@@ -172,7 +173,7 @@ func testAccCheckAzureVirtualNetworkAttributes(
 }
 
 func testAccCheckAzureVirtualNetworkDestroy(s *terraform.State) error {
-	mc := testAccProvider.Meta().(*Client).mgmtClient
+	vnetClient := testAccProvider.Meta().(*Client).vnetClient
 
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "azure_virtual_network" {
@@ -183,8 +184,12 @@ func testAccCheckAzureVirtualNetworkDestroy(s *terraform.State) error {
 			return fmt.Errorf("No Virtual Network ID is set")
 		}
 
-		nc, err := virtualnetwork.NewClient(mc).GetVirtualNetworkConfiguration()
+		nc, err := vnetClient.GetVirtualNetworkConfiguration()
 		if err != nil {
+			if management.IsResourceNotFoundError(err) {
+				// This is desirable - no configuration = no networks
+				continue
+			}
 			return fmt.Errorf("Error retrieving Virtual Network Configuration: %s", err)
 		}
 
@@ -214,16 +219,19 @@ const testAccAzureVirtualNetwork_advanced = `
 resource "azure_security_group" "foo" {
     name = "terraform-security-group1"
     location = "West US"
+}
 
-    rule {
-        name = "RDP"
-        priority = 101
-        source_cidr = "*"
-        source_port = "*"
-        destination_cidr = "*"
-        destination_port = "3389"
-        protocol = "TCP"
-    }
+resource "azure_security_group_rule" "foo" {
+	name = "terraform-secgroup-rule"
+	security_group_names = ["${azure_security_group.foo.name}"]
+	type = "Inbound"
+	action = "Deny"
+	priority = 200
+	source_address_prefix = "100.0.0.0/32"
+	source_port_range = "1000"
+	destination_address_prefix = "10.0.0.0/32"
+	destination_port_range = "1000"
+	protocol = "TCP"
 }
 
 resource "azure_virtual_network" "foo" {
@@ -242,31 +250,24 @@ const testAccAzureVirtualNetwork_update = `
 resource "azure_security_group" "foo" {
     name = "terraform-security-group1"
     location = "West US"
+}
 
-    rule {
-        name = "RDP"
-        priority = 101
-        source_cidr = "*"
-        source_port = "*"
-        destination_cidr = "*"
-        destination_port = "3389"
-        protocol = "TCP"
-    }
+resource "azure_security_group_rule" "foo" {
+	name = "terraform-secgroup-rule"
+	security_group_names = ["${azure_security_group.foo.name}"]
+	type = "Inbound"
+	action = "Deny"
+	priority = 200
+	source_address_prefix = "100.0.0.0/32"
+	source_port_range = "1000"
+	destination_address_prefix = "10.0.0.0/32"
+	destination_port_range = "1000"
+	protocol = "TCP"
 }
 
 resource "azure_security_group" "bar" {
     name = "terraform-security-group2"
     location = "West US"
-
-    rule {
-        name = "SSH"
-        priority = 101
-        source_cidr = "*"
-        source_port = "*"
-        destination_cidr = "*"
-        destination_port = "22"
-        protocol = "TCP"
-    }
 }
 
 resource "azure_virtual_network" "foo" {

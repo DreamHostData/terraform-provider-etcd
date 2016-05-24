@@ -8,8 +8,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/hashicorp/hil"
+	"github.com/hashicorp/hil/ast"
 	"github.com/hashicorp/terraform/config"
-	"github.com/hashicorp/terraform/config/lang/ast"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -123,21 +124,21 @@ func TestValueType_Zero(t *testing.T) {
 	}
 }
 
+func interfaceToVariableSwallowError(input interface{}) ast.Variable {
+	variable, _ := hil.InterfaceToVariable(input)
+	return variable
+}
+
 func TestSchemaMap_Diff(t *testing.T) {
-	cases := []struct {
+	cases := map[string]struct {
 		Schema          map[string]*Schema
 		State           *terraform.InstanceState
 		Config          map[string]interface{}
-		ConfigVariables map[string]string
+		ConfigVariables map[string]ast.Variable
 		Diff            *terraform.InstanceDiff
 		Err             bool
 	}{
-		/*
-		 * String decode
-		 */
-
-		// #0
-		{
+		"#0": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -166,8 +167,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #1
-		{
+		"#1": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -194,8 +194,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #2
-		{
+		"#2": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -216,8 +215,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #3 Computed, but set in config
-		{
+		"#3 Computed, but set in config": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -248,8 +246,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #4 Default
-		{
+		"#4 Default": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -274,8 +271,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #5 DefaultFunc, value
-		{
+		"#5 DefaultFunc, value": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -302,8 +298,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #6 DefaultFunc, configuration set
-		{
+		"#6 DefaultFunc, configuration set": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -332,8 +327,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #7 String with StateFunc
-		{
+		"String with StateFunc": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -364,8 +358,37 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #8 Variable (just checking)
-		{
+		"StateFunc not called with nil value": {
+			Schema: map[string]*Schema{
+				"availability_zone": &Schema{
+					Type:     TypeString,
+					Optional: true,
+					Computed: true,
+					StateFunc: func(a interface{}) string {
+						t.Fatalf("should not get here!")
+						return ""
+					},
+				},
+			},
+
+			State: nil,
+
+			Config: map[string]interface{}{},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"availability_zone": &terraform.ResourceAttrDiff{
+						Old:         "",
+						New:         "",
+						NewComputed: true,
+					},
+				},
+			},
+
+			Err: false,
+		},
+
+		"#8 Variable (just checking)": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -379,8 +402,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"availability_zone": "${var.foo}",
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": "bar",
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError("bar"),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -395,8 +418,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #9 Variable computed
-		{
+		"#9 Variable computed": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -410,8 +432,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"availability_zone": "${var.foo}",
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -426,12 +448,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * Int decode
-		 */
-
-		// #10
-		{
+		"#10 Int decode": {
 			Schema: map[string]*Schema{
 				"port": &Schema{
 					Type:     TypeInt,
@@ -460,12 +477,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * Bool decode
-		 */
-
-		// #11
-		{
+		"#11 bool decode": {
 			Schema: map[string]*Schema{
 				"port": &Schema{
 					Type:     TypeBool,
@@ -485,7 +497,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 				Attributes: map[string]*terraform.ResourceAttrDiff{
 					"port": &terraform.ResourceAttrDiff{
 						Old:         "",
-						New:         "0",
+						New:         "false",
 						RequiresNew: true,
 					},
 				},
@@ -494,12 +506,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * Bool
-		 */
-
-		// #12
-		{
+		"#12 Bool": {
 			Schema: map[string]*Schema{
 				"delete": &Schema{
 					Type:     TypeBool,
@@ -521,12 +528,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * List decode
-		 */
-
-		// #13
-		{
+		"#13 List decode": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -565,8 +567,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #14
-		{
+		"#14": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -581,8 +582,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"ports": []interface{}{1, "${var.foo}"},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": "2" + config.InterpSplitDelim + "5",
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError([]interface{}{"2", "5"}),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -609,8 +610,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #15
-		{
+		"#15": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -625,9 +625,9 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"ports": []interface{}{1, "${var.foo}"},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue +
-					config.InterpSplitDelim + "5",
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError([]interface{}{
+					config.UnknownVariableValue, "5"}),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -643,8 +643,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #16
-		{
+		"#16": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -671,8 +670,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #17
-		{
+		"#17": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -709,8 +707,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #18
-		{
+		"#18": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -754,8 +751,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #19
-		{
+		"#19": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeList,
@@ -781,12 +777,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * Set
-		 */
-
-		// #20
-		{
+		"#20 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -828,8 +819,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #21
-		{
+		"#21 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -855,8 +845,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #22
-		{
+		"#22 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -885,8 +874,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #23
-		{
+		"#23 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -904,8 +892,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"ports": []interface{}{"${var.foo}", 1},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": "2" + config.InterpSplitDelim + "5",
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError([]interface{}{"2", "5"}),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -932,8 +920,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #24
-		{
+		"#24 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -951,9 +938,9 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"ports": []interface{}{1, "${var.foo}"},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue +
-					config.InterpSplitDelim + "5",
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError([]interface{}{
+					config.UnknownVariableValue, "5"}),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -969,8 +956,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #25
-		{
+		"#25 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -1018,8 +1004,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #26
-		{
+		"#26 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -1047,14 +1032,23 @@ func TestSchemaMap_Diff(t *testing.T) {
 						Old: "2",
 						New: "0",
 					},
+					"ports.1": &terraform.ResourceAttrDiff{
+						Old:        "1",
+						New:        "0",
+						NewRemoved: true,
+					},
+					"ports.2": &terraform.ResourceAttrDiff{
+						Old:        "2",
+						New:        "0",
+						NewRemoved: true,
+					},
 				},
 			},
 
 			Err: false,
 		},
 
-		// #27
-		{
+		"#27 Set": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -1082,8 +1076,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #28
-		{
+		"#28 Set": {
 			Schema: map[string]*Schema{
 				"ingress": &Schema{
 					Type:     TypeSet,
@@ -1135,12 +1128,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * List of structure decode
-		 */
-
-		// #29
-		{
+		"#29 List of structure decode": {
 			Schema: map[string]*Schema{
 				"ingress": &Schema{
 					Type:     TypeList,
@@ -1182,12 +1170,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * ComputedWhen
-		 */
-
-		// #30
-		{
+		"#30 ComputedWhen": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:         TypeString,
@@ -1217,8 +1200,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #31
-		{
+		"#31": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:         TypeString,
@@ -1296,12 +1278,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 		},
 		*/
 
-		/*
-		 * Maps
-		 */
-
-		// #32
-		{
+		"#32 Maps": {
 			Schema: map[string]*Schema{
 				"config_vars": &Schema{
 					Type: TypeMap,
@@ -1335,8 +1312,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #33
-		{
+		"#33 Maps": {
 			Schema: map[string]*Schema{
 				"config_vars": &Schema{
 					Type: TypeMap,
@@ -1373,8 +1349,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #34
-		{
+		"#34 Maps": {
 			Schema: map[string]*Schema{
 				"vars": &Schema{
 					Type:     TypeMap,
@@ -1414,8 +1389,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #35
-		{
+		"#35 Maps": {
 			Schema: map[string]*Schema{
 				"vars": &Schema{
 					Type:     TypeMap,
@@ -1436,8 +1410,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #36
-		{
+		"#36 Maps": {
 			Schema: map[string]*Schema{
 				"config_vars": &Schema{
 					Type: TypeList,
@@ -1476,8 +1449,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #37
-		{
+		"#37 Maps": {
 			Schema: map[string]*Schema{
 				"config_vars": &Schema{
 					Type: TypeList,
@@ -1519,12 +1491,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		/*
-		 * ForceNews
-		 */
-
-		// #38
-		{
+		"#38 ForceNews": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -1569,8 +1536,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #39 Set
-		{
+		"#39 Set": {
 			Schema: map[string]*Schema{
 				"availability_zone": &Schema{
 					Type:     TypeString,
@@ -1620,8 +1586,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #40 Set
-		{
+		"#40 Set": {
 			Schema: map[string]*Schema{
 				"instances": &Schema{
 					Type:     TypeSet,
@@ -1644,8 +1609,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"instances": []interface{}{"${var.foo}"},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -1659,8 +1624,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #41 Set
-		{
+		"#41 Set": {
 			Schema: map[string]*Schema{
 				"route": &Schema{
 					Type:     TypeSet,
@@ -1696,8 +1660,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -1720,8 +1684,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #42 Set
-		{
+		"#42 Set": {
 			Schema: map[string]*Schema{
 				"route": &Schema{
 					Type:     TypeSet,
@@ -1763,8 +1726,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -1786,8 +1749,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #43 - Computed maps
-		{
+		"#43 - Computed maps": {
 			Schema: map[string]*Schema{
 				"vars": &Schema{
 					Type:     TypeMap,
@@ -1811,8 +1773,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #44 - Computed maps
-		{
+		"#44 - Computed maps": {
 			Schema: map[string]*Schema{
 				"vars": &Schema{
 					Type:     TypeMap,
@@ -1832,8 +1793,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -1848,8 +1809,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #45 - Empty
-		{
+		"#45 - Empty": {
 			Schema: map[string]*Schema{},
 
 			State: &terraform.InstanceState{},
@@ -1861,8 +1821,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #46 - Float
-		{
+		"#46 - Float": {
 			Schema: map[string]*Schema{
 				"some_threshold": &Schema{
 					Type: TypeFloat,
@@ -1891,8 +1850,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #47 - https://github.com/hashicorp/terraform/issues/824
-		{
+		"#47 - https://github.com/hashicorp/terraform/issues/824": {
 			Schema: map[string]*Schema{
 				"block_device": &Schema{
 					Type:     TypeSet,
@@ -1945,8 +1903,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err:  false,
 		},
 
-		// #48 - Zero value in state shouldn't result in diff
-		{
+		"#48 - Zero value in state shouldn't result in diff": {
 			Schema: map[string]*Schema{
 				"port": &Schema{
 					Type:     TypeBool,
@@ -1968,8 +1925,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #49 Set - Same as #48 but for sets
-		{
+		"#49 Set - Same as #48 but for sets": {
 			Schema: map[string]*Schema{
 				"route": &Schema{
 					Type:     TypeSet,
@@ -2011,8 +1967,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #50 - A set computed element shouldn't cause a diff
-		{
+		"#50 - A set computed element shouldn't cause a diff": {
 			Schema: map[string]*Schema{
 				"active": &Schema{
 					Type:     TypeBool,
@@ -2034,8 +1989,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #51 - An empty set should show up in the diff
-		{
+		"#51 - An empty set should show up in the diff": {
 			Schema: map[string]*Schema{
 				"instances": &Schema{
 					Type:     TypeSet,
@@ -2064,14 +2018,18 @@ func TestSchemaMap_Diff(t *testing.T) {
 						New:         "0",
 						RequiresNew: true,
 					},
+					"instances.3": &terraform.ResourceAttrDiff{
+						Old:        "foo",
+						New:        "",
+						NewRemoved: true,
+					},
 				},
 			},
 
 			Err: false,
 		},
 
-		// #52 - Map with empty value
-		{
+		"#52 - Map with empty value": {
 			Schema: map[string]*Schema{
 				"vars": &Schema{
 					Type: TypeMap,
@@ -2102,8 +2060,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #53 - Unset bool, not in state
-		{
+		"#53 - Unset bool, not in state": {
 			Schema: map[string]*Schema{
 				"force": &Schema{
 					Type:     TypeBool,
@@ -2121,8 +2078,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #54 - Unset set, not in state
-		{
+		"#54 - Unset set, not in state": {
 			Schema: map[string]*Schema{
 				"metadata_keys": &Schema{
 					Type:     TypeSet,
@@ -2142,8 +2098,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #55 - Unset list in state, should not show up computed
-		{
+		"#55 - Unset list in state, should not show up computed": {
 			Schema: map[string]*Schema{
 				"metadata_keys": &Schema{
 					Type:     TypeList,
@@ -2167,8 +2122,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #56 - Set element computed substring
-		{
+		"#56 - Set element computed substring": {
 			Schema: map[string]*Schema{
 				"ports": &Schema{
 					Type:     TypeSet,
@@ -2186,8 +2140,8 @@ func TestSchemaMap_Diff(t *testing.T) {
 				"ports": []interface{}{1, "${var.foo}32"},
 			},
 
-			ConfigVariables: map[string]string{
-				"var.foo": config.UnknownVariableValue,
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
 			},
 
 			Diff: &terraform.InstanceDiff{
@@ -2203,9 +2157,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #57 - Computed map without config that's known to be empty does not
-		//       generate diff
-		{
+		"#57 Computed map without config that's known to be empty does not generate diff": {
 			Schema: map[string]*Schema{
 				"tags": &Schema{
 					Type:     TypeMap,
@@ -2226,8 +2178,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #58 Set with hyphen keys
-		{
+		"#58 Set with hyphen keys": {
 			Schema: map[string]*Schema{
 				"route": &Schema{
 					Type:     TypeSet,
@@ -2283,8 +2234,7 @@ func TestSchemaMap_Diff(t *testing.T) {
 			Err: false,
 		},
 
-		// #59: StateFunc in nested set (#1759)
-		{
+		"#59: StateFunc in nested set (#1759)": {
 			Schema: map[string]*Schema{
 				"service_account": &Schema{
 					Type:     TypeList,
@@ -2348,33 +2298,130 @@ func TestSchemaMap_Diff(t *testing.T) {
 
 			Err: false,
 		},
+
+		"#60 - Removing set elements": {
+			Schema: map[string]*Schema{
+				"instances": &Schema{
+					Type:     TypeSet,
+					Elem:     &Schema{Type: TypeString},
+					Optional: true,
+					ForceNew: true,
+					Set: func(v interface{}) int {
+						return len(v.(string))
+					},
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"instances.#": "2",
+					"instances.3": "333",
+					"instances.2": "22",
+				},
+			},
+
+			Config: map[string]interface{}{
+				"instances": []interface{}{"333", "4444"},
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"instances.#": &terraform.ResourceAttrDiff{
+						Old: "2",
+						New: "2",
+					},
+					"instances.2": &terraform.ResourceAttrDiff{
+						Old:        "22",
+						New:        "",
+						NewRemoved: true,
+					},
+					"instances.3": &terraform.ResourceAttrDiff{
+						Old:         "333",
+						New:         "333",
+						RequiresNew: true,
+					},
+					"instances.4": &terraform.ResourceAttrDiff{
+						Old:         "",
+						New:         "4444",
+						RequiresNew: true,
+					},
+				},
+			},
+
+			Err: false,
+		},
+
+		"Bools can be set with 0/1 in config, still get true/false": {
+			Schema: map[string]*Schema{
+				"one": &Schema{
+					Type:     TypeBool,
+					Optional: true,
+				},
+				"two": &Schema{
+					Type:     TypeBool,
+					Optional: true,
+				},
+				"three": &Schema{
+					Type:     TypeBool,
+					Optional: true,
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"one":   "false",
+					"two":   "true",
+					"three": "true",
+				},
+			},
+
+			Config: map[string]interface{}{
+				"one": "1",
+				"two": "0",
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"one": &terraform.ResourceAttrDiff{
+						Old: "false",
+						New: "true",
+					},
+					"two": &terraform.ResourceAttrDiff{
+						Old: "true",
+						New: "false",
+					},
+					"three": &terraform.ResourceAttrDiff{
+						Old:        "true",
+						New:        "false",
+						NewRemoved: true,
+					},
+				},
+			},
+
+			Err: false,
+		},
 	}
 
-	for i, tc := range cases {
+	for tn, tc := range cases {
 		c, err := config.NewRawConfig(tc.Config)
 		if err != nil {
-			t.Fatalf("#%d err: %s", i, err)
+			t.Fatalf("#%q err: %s", tn, err)
 		}
 
 		if len(tc.ConfigVariables) > 0 {
-			vars := make(map[string]ast.Variable)
-			for k, v := range tc.ConfigVariables {
-				vars[k] = ast.Variable{Value: v, Type: ast.TypeString}
-			}
-
-			if err := c.Interpolate(vars); err != nil {
-				t.Fatalf("#%d err: %s", i, err)
+			if err := c.Interpolate(tc.ConfigVariables); err != nil {
+				t.Fatalf("#%q err: %s", tn, err)
 			}
 		}
 
 		d, err := schemaMap(tc.Schema).Diff(
 			tc.State, terraform.NewResourceConfig(c))
-		if (err != nil) != tc.Err {
-			t.Fatalf("#%d err: %s", i, err)
+		if err != nil != tc.Err {
+			t.Fatalf("#%q err: %s", tn, err)
 		}
 
 		if !reflect.DeepEqual(tc.Diff, d) {
-			t.Fatalf("#%d:\n\nexpected: %#v\n\ngot:\n\n%#v", i, tc.Diff, d)
+			t.Fatalf("#%q:\n\nexpected:\n%#v\n\ngot:\n%#v", tn, tc.Diff, d)
 		}
 	}
 }
@@ -2527,7 +2574,7 @@ func TestSchemaMap_Input(t *testing.T) {
 		rc.Config = make(map[string]interface{})
 
 		actual, err := schemaMap(tc.Schema).Input(input, rc)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("#%v err: %s", i, err)
 		}
 
@@ -2537,18 +2584,85 @@ func TestSchemaMap_Input(t *testing.T) {
 	}
 }
 
+func TestSchemaMap_InputDefault(t *testing.T) {
+	emptyConfig := make(map[string]interface{})
+	c, err := config.NewRawConfig(emptyConfig)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	rc := terraform.NewResourceConfig(c)
+	rc.Config = make(map[string]interface{})
+
+	input := new(terraform.MockUIInput)
+	input.InputFn = func(opts *terraform.InputOpts) (string, error) {
+		t.Fatalf("InputFn should not be called on: %#v", opts)
+		return "", nil
+	}
+
+	schema := map[string]*Schema{
+		"availability_zone": &Schema{
+			Type:     TypeString,
+			Default:  "foo",
+			Optional: true,
+		},
+	}
+	actual, err := schemaMap(schema).Input(input, rc)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected := map[string]interface{}{}
+
+	if !reflect.DeepEqual(expected, actual.Config) {
+		t.Fatalf("got: %#v\nexpected: %#v", actual.Config, expected)
+	}
+}
+
+func TestSchemaMap_InputDeprecated(t *testing.T) {
+	emptyConfig := make(map[string]interface{})
+	c, err := config.NewRawConfig(emptyConfig)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	rc := terraform.NewResourceConfig(c)
+	rc.Config = make(map[string]interface{})
+
+	input := new(terraform.MockUIInput)
+	input.InputFn = func(opts *terraform.InputOpts) (string, error) {
+		t.Fatalf("InputFn should not be called on: %#v", opts)
+		return "", nil
+	}
+
+	schema := map[string]*Schema{
+		"availability_zone": &Schema{
+			Type:       TypeString,
+			Deprecated: "long gone",
+			Optional:   true,
+		},
+	}
+	actual, err := schemaMap(schema).Input(input, rc)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected := map[string]interface{}{}
+
+	if !reflect.DeepEqual(expected, actual.Config) {
+		t.Fatalf("got: %#v\nexpected: %#v", actual.Config, expected)
+	}
+}
+
 func TestSchemaMap_InternalValidate(t *testing.T) {
-	cases := []struct {
+	cases := map[string]struct {
 		In  map[string]*Schema
 		Err bool
 	}{
-		{
+		"nothing": {
 			nil,
 			false,
 		},
 
-		// No optional and no required
-		{
+		"Both optional and required": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeInt,
@@ -2559,8 +2673,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// No optional and no required
-		{
+		"No optional and no required": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type: TypeInt,
@@ -2569,8 +2682,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Missing Type
-		{
+		"Missing Type": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Required: true,
@@ -2579,8 +2691,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Required but computed
-		{
+		"Required but computed": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeInt,
@@ -2591,8 +2702,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Looks good
-		{
+		"Looks good": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeString,
@@ -2602,8 +2712,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			false,
 		},
 
-		// Computed but has default
-		{
+		"Computed but has default": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeInt,
@@ -2615,8 +2724,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Required but has default
-		{
+		"Required but has default": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeInt,
@@ -2628,8 +2736,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// List element not set
-		{
+		"List element not set": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type: TypeList,
@@ -2638,8 +2745,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// List default
-		{
+		"List default": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:    TypeList,
@@ -2650,8 +2756,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// List element computed
-		{
+		"List element computed": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeList,
@@ -2665,8 +2770,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// List element with Set set
-		{
+		"List element with Set set": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeList,
@@ -2678,8 +2782,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Set element with no Set set
-		{
+		"Set element with no Set set": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeSet,
@@ -2687,11 +2790,10 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 					Optional: true,
 				},
 			},
-			true,
+			false,
 		},
 
-		// Required but computed
-		{
+		"Required but computedWhen": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:         TypeInt,
@@ -2702,8 +2804,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Conflicting attributes cannot be required
-		{
+		"Conflicting attributes cannot be required": {
 			map[string]*Schema{
 				"blacklist": &Schema{
 					Type:     TypeBool,
@@ -2718,8 +2819,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Attribute with conflicts cannot be required
-		{
+		"Attribute with conflicts cannot be required": {
 			map[string]*Schema{
 				"whitelist": &Schema{
 					Type:          TypeBool,
@@ -2730,8 +2830,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// ConflictsWith cannot be used w/ Computed
-		{
+		"ConflictsWith cannot be used w/ Computed": {
 			map[string]*Schema{
 				"blacklist": &Schema{
 					Type:     TypeBool,
@@ -2746,8 +2845,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// ConflictsWith cannot be used w/ ComputedWhen
-		{
+		"ConflictsWith cannot be used w/ ComputedWhen": {
 			map[string]*Schema{
 				"blacklist": &Schema{
 					Type:         TypeBool,
@@ -2762,8 +2860,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Sub-resource invalid
-		{
+		"Sub-resource invalid": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeList,
@@ -2778,8 +2875,7 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			true,
 		},
 
-		// Sub-resource valid
-		{
+		"Sub-resource valid": {
 			map[string]*Schema{
 				"foo": &Schema{
 					Type:     TypeList,
@@ -2796,15 +2892,28 @@ func TestSchemaMap_InternalValidate(t *testing.T) {
 			},
 			false,
 		},
+
+		"ValidateFunc on non-primitive": {
+			map[string]*Schema{
+				"foo": &Schema{
+					Type:     TypeSet,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						return
+					},
+				},
+			},
+			true,
+		},
 	}
 
-	for i, tc := range cases {
+	for tn, tc := range cases {
 		err := schemaMap(tc.In).InternalValidate(schemaMap{})
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			if tc.Err {
-				t.Fatalf("%d: Expected error did not occur:\n\n%#v", i, tc.In)
+				t.Fatalf("%q: Expected error did not occur:\n\n%#v", tn, tc.In)
 			}
-			t.Fatalf("%d: Unexpected error occured:\n\n%#v", i, tc.In)
+			t.Fatalf("%q: Unexpected error occurred:\n\n%#v", tn, tc.In)
 		}
 	}
 
@@ -2965,6 +3074,29 @@ func TestSchemaMap_Validate(t *testing.T) {
 			Config: map[string]interface{}{},
 
 			Err: false,
+		},
+
+		"Sub-resource is the wrong type": {
+			Schema: map[string]*Schema{
+				"ingress": &Schema{
+					Type:     TypeList,
+					Required: true,
+					Elem: &Resource{
+						Schema: map[string]*Schema{
+							"from": &Schema{
+								Type:     TypeInt,
+								Required: true,
+							},
+						},
+					},
+				},
+			},
+
+			Config: map[string]interface{}{
+				"ingress": []interface{}{"foo"},
+			},
+
+			Err: true,
 		},
 
 		"Not a list": {
@@ -3270,6 +3402,36 @@ func TestSchemaMap_Validate(t *testing.T) {
 			Err: true,
 		},
 
+		"Bad, should not allow lists to be assigned to string attributes": {
+			Schema: map[string]*Schema{
+				"availability_zone": &Schema{
+					Type:     TypeString,
+					Required: true,
+				},
+			},
+
+			Config: map[string]interface{}{
+				"availability_zone": []interface{}{"foo", "bar", "baz"},
+			},
+
+			Err: true,
+		},
+
+		"Bad, should not allow maps to be assigned to string attributes": {
+			Schema: map[string]*Schema{
+				"availability_zone": &Schema{
+					Type:     TypeString,
+					Required: true,
+				},
+			},
+
+			Config: map[string]interface{}{
+				"availability_zone": map[string]interface{}{"foo": "bar", "baz": "thing"},
+			},
+
+			Err: true,
+		},
+
 		"Deprecated attribute usage generates warning, but not error": {
 			Schema: map[string]*Schema{
 				"old_news": &Schema{
@@ -3399,8 +3561,100 @@ func TestSchemaMap_Validate(t *testing.T) {
 
 			Err: true,
 			Errors: []error{
-				fmt.Errorf("\"optional_att\": conflicts with required_att (\"required-val\")"),
+				fmt.Errorf(`"optional_att": conflicts with required_att ("required-val")`),
 			},
+		},
+
+		"Good with ValidateFunc": {
+			Schema: map[string]*Schema{
+				"validate_me": &Schema{
+					Type:     TypeString,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						return
+					},
+				},
+			},
+			Config: map[string]interface{}{
+				"validate_me": "valid",
+			},
+			Err: false,
+		},
+
+		"Bad with ValidateFunc": {
+			Schema: map[string]*Schema{
+				"validate_me": &Schema{
+					Type:     TypeString,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						es = append(es, fmt.Errorf("something is not right here"))
+						return
+					},
+				},
+			},
+			Config: map[string]interface{}{
+				"validate_me": "invalid",
+			},
+			Err: true,
+			Errors: []error{
+				fmt.Errorf(`something is not right here`),
+			},
+		},
+
+		"ValidateFunc not called when type does not match": {
+			Schema: map[string]*Schema{
+				"number": &Schema{
+					Type:     TypeInt,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						t.Fatalf("Should not have gotten validate call")
+						return
+					},
+				},
+			},
+			Config: map[string]interface{}{
+				"number": "NaN",
+			},
+			Err: true,
+		},
+
+		"ValidateFunc gets decoded type": {
+			Schema: map[string]*Schema{
+				"maybe": &Schema{
+					Type:     TypeBool,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						if _, ok := v.(bool); !ok {
+							t.Fatalf("Expected bool, got: %#v", v)
+						}
+						return
+					},
+				},
+			},
+			Config: map[string]interface{}{
+				"maybe": "true",
+			},
+		},
+
+		"ValidateFunc is not called with a computed value": {
+			Schema: map[string]*Schema{
+				"validate_me": &Schema{
+					Type:     TypeString,
+					Required: true,
+					ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+						es = append(es, fmt.Errorf("something is not right here"))
+						return
+					},
+				},
+			},
+			Config: map[string]interface{}{
+				"validate_me": "${var.foo}",
+			},
+			Vars: map[string]string{
+				"var.foo": config.UnknownVariableValue,
+			},
+
+			Err: false,
 		},
 	}
 
@@ -3421,7 +3675,7 @@ func TestSchemaMap_Validate(t *testing.T) {
 		}
 
 		ws, es := schemaMap(tc.Schema).Validate(terraform.NewResourceConfig(c))
-		if (len(es) > 0) != tc.Err {
+		if len(es) > 0 != tc.Err {
 			if len(es) == 0 {
 				t.Errorf("%q: no errors", tn)
 			}
@@ -3440,6 +3694,97 @@ func TestSchemaMap_Validate(t *testing.T) {
 		if tc.Errors != nil {
 			if !reflect.DeepEqual(es, tc.Errors) {
 				t.Fatalf("%q: errors:\n\nexpected: %q\ngot: %q", tn, tc.Errors, es)
+			}
+		}
+	}
+}
+
+func TestSchemaSet_ValidateMaxItems(t *testing.T) {
+	cases := map[string]struct {
+		Schema          map[string]*Schema
+		State           *terraform.InstanceState
+		Config          map[string]interface{}
+		ConfigVariables map[string]string
+		Diff            *terraform.InstanceDiff
+		Err             bool
+		Errors          []error
+	}{
+		"#0": {
+			Schema: map[string]*Schema{
+				"aliases": &Schema{
+					Type:     TypeSet,
+					Optional: true,
+					MaxItems: 1,
+					Elem:     &Schema{Type: TypeString},
+				},
+			},
+			State: nil,
+			Config: map[string]interface{}{
+				"aliases": []interface{}{"foo", "bar"},
+			},
+			Diff: nil,
+			Err:  true,
+			Errors: []error{
+				fmt.Errorf("aliases: attribute supports 1 item maximum, config has 2 declared"),
+			},
+		},
+		"#1": {
+			Schema: map[string]*Schema{
+				"aliases": &Schema{
+					Type:     TypeSet,
+					Optional: true,
+					Elem:     &Schema{Type: TypeString},
+				},
+			},
+			State: nil,
+			Config: map[string]interface{}{
+				"aliases": []interface{}{"foo", "bar"},
+			},
+			Diff:   nil,
+			Err:    false,
+			Errors: nil,
+		},
+		"#2": {
+			Schema: map[string]*Schema{
+				"aliases": &Schema{
+					Type:     TypeSet,
+					Optional: true,
+					MaxItems: 1,
+					Elem:     &Schema{Type: TypeString},
+				},
+			},
+			State: nil,
+			Config: map[string]interface{}{
+				"aliases": []interface{}{"foo"},
+			},
+			Diff:   nil,
+			Err:    false,
+			Errors: nil,
+		},
+	}
+
+	for tn, tc := range cases {
+		c, err := config.NewRawConfig(tc.Config)
+		if err != nil {
+			t.Fatalf("%q: err: %s", tn, err)
+		}
+		_, es := schemaMap(tc.Schema).Validate(terraform.NewResourceConfig(c))
+
+		if len(es) > 0 != tc.Err {
+			if len(es) == 0 {
+				t.Errorf("%q: no errors", tn)
+			}
+
+			for _, e := range es {
+				t.Errorf("%q: err: %s", tn, e)
+			}
+
+			t.FailNow()
+		}
+
+		if tc.Errors != nil {
+			if !reflect.DeepEqual(es, tc.Errors) {
+				t.Fatalf("%q: expected: %q\ngot: %q", tn, tc.Errors, es)
 			}
 		}
 	}

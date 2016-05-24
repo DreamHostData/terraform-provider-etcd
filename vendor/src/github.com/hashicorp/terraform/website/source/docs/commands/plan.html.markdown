@@ -39,7 +39,7 @@ The command-line flags are all optional. The list of available flags are:
 
 * `-module-depth=n` - Specifies the depth of modules to show in the output.
   This does not affect the plan itself, only the output shown. By default,
-  this is zero. -1 will expand all.
+  this is -1, which will expand all.
 
 * `-no-color` - Disables output with coloring.
 
@@ -47,6 +47,9 @@ The command-line flags are all optional. The list of available flags are:
   can then be used with `terraform apply` to be certain that only the
   changes shown in this plan are applied. Read the warning on saved
   plans below.
+
+* `-parallelism=n` - Limit the number of concurrent operation as Terraform
+  [walks the graph](/docs/internals/graph.html#walking-the-graph).
 
 * `-refresh=true` - Update the state prior to checking for differences.
 
@@ -62,7 +65,7 @@ The command-line flags are all optional. The list of available flags are:
 
 * `-var-file=foo` - Set variables in the Terraform configuration from
    a file. If "terraform.tfvars" is present, it will be automatically
-   loaded if this flag is not specified.
+   loaded if this flag is not specified. This flag can be used multiple times.
 
 ## Security Warning
 

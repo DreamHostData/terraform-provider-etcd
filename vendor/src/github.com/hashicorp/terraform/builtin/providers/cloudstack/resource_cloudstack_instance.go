@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -22,8 +23,8 @@ func resourceCloudStackInstance() *schema.Resource {
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
+				Optional: true,
+				Computed: true,
 			},
 
 			"display_name": &schema.Schema{
@@ -37,17 +38,33 @@ func resourceCloudStackInstance() *schema.Resource {
 				Required: true,
 			},
 
-			"network": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
-
-			"ipaddress": &schema.Schema{
+			"network_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
 				ForceNew: true,
+			},
+
+			"network": &schema.Schema{
+				Type:       schema.TypeString,
+				Optional:   true,
+				ForceNew:   true,
+				Deprecated: "Please use the `network_id` field instead",
+			},
+
+			"ip_address": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
+
+			"ipaddress": &schema.Schema{
+				Type:       schema.TypeString,
+				Optional:   true,
+				Computed:   true,
+				ForceNew:   true,
+				Deprecated: "Please use the `ip_address` field instead",
 			},
 
 			"template": &schema.Schema{
@@ -93,6 +110,12 @@ func resourceCloudStackInstance() *schema.Resource {
 				Optional: true,
 				Default:  false,
 			},
+
+			"group": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+			},
 		},
 	}
 }
@@ -100,20 +123,26 @@ func resourceCloudStackInstance() *schema.Resource {
 func resourceCloudStackInstanceCreate(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
-	// Retrieve the service_offering UUID
-	serviceofferingid, e := retrieveUUID(cs, "service_offering", d.Get("service_offering").(string))
+	// Retrieve the service_offering ID
+	serviceofferingid, e := retrieveID(cs, "service_offering", d.Get("service_offering").(string))
+	if e != nil {
+		return e.Error()
+	}
+
+	// Retrieve the zone ID
+	zoneid, e := retrieveID(cs, "zone", d.Get("zone").(string))
 	if e != nil {
 		return e.Error()
 	}
 
 	// Retrieve the zone object
-	zone, _, err := cs.Zone.GetZoneByName(d.Get("zone").(string))
+	zone, _, err := cs.Zone.GetZoneByID(zoneid)
 	if err != nil {
 		return err
 	}
 
-	// Retrieve the template UUID
-	templateid, e := retrieveTemplateUUID(cs, zone.Id, d.Get("template").(string))
+	// Retrieve the template ID
+	templateid, e := retrieveTemplateID(cs, zone.Id, d.Get("template").(string))
 	if e != nil {
 		return e.Error()
 	}
@@ -122,40 +151,55 @@ func resourceCloudStackInstanceCreate(d *schema.ResourceData, meta interface{}) 
 	p := cs.VirtualMachine.NewDeployVirtualMachineParams(serviceofferingid, templateid, zone.Id)
 
 	// Set the name
-	name := d.Get("name").(string)
-	p.SetName(name)
+	name, hasName := d.GetOk("name")
+	if hasName {
+		p.SetName(name.(string))
+	}
 
 	// Set the display name
 	if displayname, ok := d.GetOk("display_name"); ok {
 		p.SetDisplayname(displayname.(string))
-	} else {
-		p.SetDisplayname(name)
+	} else if hasName {
+		p.SetDisplayname(name.(string))
 	}
 
 	if zone.Networktype == "Advanced" {
-		// Retrieve the network UUID
-		networkid, e := retrieveUUID(cs, "network", d.Get("network").(string))
+		network, ok := d.GetOk("network_id")
+		if !ok {
+			network, ok = d.GetOk("network")
+		}
+		if !ok {
+			return errors.New(
+				"Either `network_id` or [deprecated] `network` must be provided when using a zone with network type `advanced`.")
+		}
+
+		// Retrieve the network ID
+		networkid, e := retrieveID(
+			cs,
+			"network",
+			network.(string),
+			cloudstack.WithProject(d.Get("project").(string)),
+		)
 		if e != nil {
 			return e.Error()
 		}
+
 		// Set the default network ID
 		p.SetNetworkids([]string{networkid})
 	}
 
 	// If there is a ipaddres supplied, add it to the parameter struct
-	if ipaddres, ok := d.GetOk("ipaddress"); ok {
-		p.SetIpaddress(ipaddres.(string))
+	ipaddress, ok := d.GetOk("ip_address")
+	if !ok {
+		ipaddress, ok = d.GetOk("ipaddress")
+	}
+	if ok {
+		p.SetIpaddress(ipaddress.(string))
 	}
 
-	// If there is a project supplied, we retreive and set the project id
-	if project, ok := d.GetOk("project"); ok {
-		// Retrieve the project UUID
-		projectid, e := retrieveUUID(cs, "project", project.(string))
-		if e != nil {
-			return e.Error()
-		}
-		// Set the default project ID
-		p.SetProjectid(projectid)
+	// If there is a project supplied, we retrieve and set the project id
+	if err := setProjectid(p, cs, d); err != nil {
+		return err
 	}
 
 	// If a keypair is supplied, add it to the parameter struct
@@ -167,12 +211,27 @@ func resourceCloudStackInstanceCreate(d *schema.ResourceData, meta interface{}) 
 	// added to the parameter struct
 	if userData, ok := d.GetOk("user_data"); ok {
 		ud := base64.StdEncoding.EncodeToString([]byte(userData.(string)))
-		if len(ud) > 2048 {
+
+		// deployVirtualMachine uses POST by default, so max userdata is 32K
+		maxUD := 32768
+
+		if cs.HTTPGETOnly {
+			// deployVirtualMachine using GET instead, so max userdata is 2K
+			maxUD = 2048
+		}
+
+		if len(ud) > maxUD {
 			return fmt.Errorf(
 				"The supplied user_data contains %d bytes after encoding, "+
-					"this exeeds the limit of 2048 bytes", len(ud))
+					"this exeeds the limit of %d bytes", len(ud), maxUD)
 		}
+
 		p.SetUserdata(ud)
+	}
+
+	// If there is a group supplied, add it to the parameter struct
+	if group, ok := d.GetOk("group"); ok {
+		p.SetGroup(group.(string))
 	}
 
 	// Create the new instance
@@ -196,11 +255,13 @@ func resourceCloudStackInstanceRead(d *schema.ResourceData, meta interface{}) er
 	cs := meta.(*cloudstack.CloudStackClient)
 
 	// Get the virtual machine details
-	vm, count, err := cs.VirtualMachine.GetVirtualMachineByID(d.Id())
+	vm, count, err := cs.VirtualMachine.GetVirtualMachineByID(
+		d.Id(),
+		cloudstack.WithProject(d.Get("project").(string)),
+	)
 	if err != nil {
 		if count == 0 {
 			log.Printf("[DEBUG] Instance %s does no longer exist", d.Get("name").(string))
-			// Clear out all details so it's obvious the instance is gone
 			d.SetId("")
 			return nil
 		}
@@ -211,14 +272,14 @@ func resourceCloudStackInstanceRead(d *schema.ResourceData, meta interface{}) er
 	// Update the config
 	d.Set("name", vm.Name)
 	d.Set("display_name", vm.Displayname)
-	d.Set("ipaddress", vm.Nic[0].Ipaddress)
-	d.Set("zone", vm.Zonename)
-	//NB cloudstack sometimes sends back the wrong keypair name, so dont update it
+	d.Set("network_id", vm.Nic[0].Networkid)
+	d.Set("ip_address", vm.Nic[0].Ipaddress)
+	d.Set("group", vm.Group)
 
-	setValueOrUUID(d, "network", vm.Nic[0].Networkname, vm.Nic[0].Networkid)
-	setValueOrUUID(d, "service_offering", vm.Serviceofferingname, vm.Serviceofferingid)
-	setValueOrUUID(d, "template", vm.Templatename, vm.Templateid)
-	setValueOrUUID(d, "project", vm.Project, vm.Projectid)
+	setValueOrID(d, "service_offering", vm.Serviceofferingname, vm.Serviceofferingid)
+	setValueOrID(d, "template", vm.Templatename, vm.Templateid)
+	setValueOrID(d, "project", vm.Project, vm.Projectid)
+	setValueOrID(d, "zone", vm.Zonename, vm.Zoneid)
 
 	return nil
 }
@@ -249,21 +310,62 @@ func resourceCloudStackInstanceUpdate(d *schema.ResourceData, meta interface{}) 
 		d.SetPartial("display_name")
 	}
 
+	// Check if the group is changed and if so, update the virtual machine
+	if d.HasChange("group") {
+		log.Printf("[DEBUG] Group changed for %s, starting update", name)
+
+		// Create a new parameter struct
+		p := cs.VirtualMachine.NewUpdateVirtualMachineParams(d.Id())
+
+		// Set the new group
+		p.SetGroup(d.Get("group").(string))
+
+		// Update the display name
+		_, err := cs.VirtualMachine.UpdateVirtualMachine(p)
+		if err != nil {
+			return fmt.Errorf(
+				"Error updating the group for instance %s: %s", name, err)
+		}
+
+		d.SetPartial("group")
+	}
+
 	// Attributes that require reboot to update
-	if d.HasChange("service_offering") || d.HasChange("keypair") {
+	if d.HasChange("name") || d.HasChange("service_offering") || d.HasChange("keypair") {
 		// Before we can actually make these changes, the virtual machine must be stopped
-		_, err := cs.VirtualMachine.StopVirtualMachine(cs.VirtualMachine.NewStopVirtualMachineParams(d.Id()))
+		_, err := cs.VirtualMachine.StopVirtualMachine(
+			cs.VirtualMachine.NewStopVirtualMachineParams(d.Id()))
 		if err != nil {
 			return fmt.Errorf(
 				"Error stopping instance %s before making changes: %s", name, err)
+		}
+
+		// Check if the name has changed and if so, update the name
+		if d.HasChange("name") {
+			log.Printf("[DEBUG] Name for %s changed to %s, starting update", d.Id(), name)
+
+			// Create a new parameter struct
+			p := cs.VirtualMachine.NewUpdateVirtualMachineParams(d.Id())
+
+			// Set the new name
+			p.SetName(name)
+
+			// Update the display name
+			_, err := cs.VirtualMachine.UpdateVirtualMachine(p)
+			if err != nil {
+				return fmt.Errorf(
+					"Error updating the name for instance %s: %s", name, err)
+			}
+
+			d.SetPartial("name")
 		}
 
 		// Check if the service offering is changed and if so, update the offering
 		if d.HasChange("service_offering") {
 			log.Printf("[DEBUG] Service offering changed for %s, starting update", name)
 
-			// Retrieve the service_offering UUID
-			serviceofferingid, e := retrieveUUID(cs, "service_offering", d.Get("service_offering").(string))
+			// Retrieve the service_offering ID
+			serviceofferingid, e := retrieveID(cs, "service_offering", d.Get("service_offering").(string))
 			if e != nil {
 				return e.Error()
 			}
@@ -295,12 +397,14 @@ func resourceCloudStackInstanceUpdate(d *schema.ResourceData, meta interface{}) 
 		}
 
 		// Start the virtual machine again
-		_, err = cs.VirtualMachine.StartVirtualMachine(cs.VirtualMachine.NewStartVirtualMachineParams(d.Id()))
+		_, err = cs.VirtualMachine.StartVirtualMachine(
+			cs.VirtualMachine.NewStartVirtualMachineParams(d.Id()))
 		if err != nil {
 			return fmt.Errorf(
 				"Error starting instance %s after making changes", name)
 		}
 	}
+
 	d.Partial(false)
 	return resourceCloudStackInstanceRead(d, meta)
 }
@@ -317,7 +421,7 @@ func resourceCloudStackInstanceDelete(d *schema.ResourceData, meta interface{}) 
 
 	log.Printf("[INFO] Destroying instance: %s", d.Get("name").(string))
 	if _, err := cs.VirtualMachine.DestroyVirtualMachine(p); err != nil {
-		// This is a very poor way to be told the UUID does no longer exist :(
+		// This is a very poor way to be told the ID does no longer exist :(
 		if strings.Contains(err.Error(), fmt.Sprintf(
 			"Invalid parameter id value=%s due to incorrect long value format, "+
 				"or entity does not exist", d.Id())) {

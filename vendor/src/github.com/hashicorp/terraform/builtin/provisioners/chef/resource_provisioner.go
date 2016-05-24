@@ -16,6 +16,7 @@ import (
 
 	"github.com/hashicorp/terraform/communicator"
 	"github.com/hashicorp/terraform/communicator/remote"
+	"github.com/hashicorp/terraform/helper/pathorcontents"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/go-homedir"
 	"github.com/mitchellh/go-linereader"
@@ -23,13 +24,18 @@ import (
 )
 
 const (
-	clienrb        = "client.rb"
-	defaultEnv     = "_default"
-	firstBoot      = "first-boot.json"
-	logfileDir     = "logfiles"
-	linuxConfDir   = "/etc/chef"
-	validationKey  = "validation.pem"
-	windowsConfDir = "C:/chef"
+	clienrb         = "client.rb"
+	defaultEnv      = "_default"
+	firstBoot       = "first-boot.json"
+	logfileDir      = "logfiles"
+	linuxChefCmd    = "chef-client"
+	linuxKnifeCmd   = "knife"
+	linuxConfDir    = "/etc/chef"
+	secretKey       = "encrypted_data_bag_secret"
+	validationKey   = "validation.pem"
+	windowsChefCmd  = "cmd /c chef-client"
+	windowsKnifeCmd = "cmd /c knife"
+	windowsConfDir  = "C:/chef"
 )
 
 const clientConf = `
@@ -37,6 +43,12 @@ log_location            STDOUT
 chef_server_url         "{{ .ServerURL }}"
 validation_client_name  "{{ .ValidationClientName }}"
 node_name               "{{ .NodeName }}"
+
+{{ if .UsePolicyfile }}
+use_policyfile true
+policy_group 	 "{{ .PolicyGroup }}"
+policy_name 	 "{{ .PolicyName }}"
+{{ end }}
 
 {{ if .HTTPProxy }}
 http_proxy          "{{ .HTTPProxy }}"
@@ -50,32 +62,55 @@ ENV['https_proxy'] = "{{ .HTTPSProxy }}"
 ENV['HTTPS_PROXY'] = "{{ .HTTPSProxy }}"
 {{ end }}
 
-{{ if .NOProxy }}no_proxy "{{ join .NOProxy "," }}"{{ end }}
+{{ if .NOProxy }}
+no_proxy          "{{ join .NOProxy "," }}"
+ENV['no_proxy'] = "{{ join .NOProxy "," }}"
+{{ end }}
+
 {{ if .SSLVerifyMode }}ssl_verify_mode {{ .SSLVerifyMode }}{{ end }}
+
+{{ if .DisableReporting }}enable_reporting false{{ end }}
+
+{{ if .ClientOptions }}{{ join .ClientOptions "\n" }}{{ end }}
 `
 
 // Provisioner represents a specificly configured chef provisioner
 type Provisioner struct {
-	Attributes           interface{} `mapstructure:"attributes"`
-	Environment          string      `mapstructure:"environment"`
-	LogToFile            bool        `mapstructure:"log_to_file"`
-	HTTPProxy            string      `mapstructure:"http_proxy"`
-	HTTPSProxy           string      `mapstructure:"https_proxy"`
-	NOProxy              []string    `mapstructure:"no_proxy"`
-	NodeName             string      `mapstructure:"node_name"`
-	PreventSudo          bool        `mapstructure:"prevent_sudo"`
-	RunList              []string    `mapstructure:"run_list"`
-	ServerURL            string      `mapstructure:"server_url"`
-	SkipInstall          bool        `mapstructure:"skip_install"`
-	SSLVerifyMode        string      `mapstructure:"ssl_verify_mode"`
-	ValidationClientName string      `mapstructure:"validation_client_name"`
-	ValidationKeyPath    string      `mapstructure:"validation_key_path"`
-	Version              string      `mapstructure:"version"`
+	Attributes            interface{} `mapstructure:"attributes"`
+	AttributesJSON        string      `mapstructure:"attributes_json"`
+	ClientOptions         []string    `mapstructure:"client_options"`
+	DisableReporting      bool        `mapstructure:"disable_reporting"`
+	Environment           string      `mapstructure:"environment"`
+	FetchChefCertificates bool        `mapstructure:"fetch_chef_certificates"`
+	LogToFile             bool        `mapstructure:"log_to_file"`
+	UsePolicyfile         bool        `mapstructure:"use_policyfile"`
+	PolicyGroup           string      `mapstructure:"policy_group"`
+	PolicyName            string      `mapstructure:"policy_name"`
+	HTTPProxy             string      `mapstructure:"http_proxy"`
+	HTTPSProxy            string      `mapstructure:"https_proxy"`
+	NOProxy               []string    `mapstructure:"no_proxy"`
+	NodeName              string      `mapstructure:"node_name"`
+	OhaiHints             []string    `mapstructure:"ohai_hints"`
+	OSType                string      `mapstructure:"os_type"`
+	PreventSudo           bool        `mapstructure:"prevent_sudo"`
+	RunList               []string    `mapstructure:"run_list"`
+	SecretKey             string      `mapstructure:"secret_key"`
+	ServerURL             string      `mapstructure:"server_url"`
+	SkipInstall           bool        `mapstructure:"skip_install"`
+	SSLVerifyMode         string      `mapstructure:"ssl_verify_mode"`
+	ValidationClientName  string      `mapstructure:"validation_client_name"`
+	ValidationKey         string      `mapstructure:"validation_key"`
+	Version               string      `mapstructure:"version"`
 
-	installChefClient func(terraform.UIOutput, communicator.Communicator) error
-	createConfigFiles func(terraform.UIOutput, communicator.Communicator) error
-	runChefClient     func(terraform.UIOutput, communicator.Communicator) error
-	useSudo           bool
+	installChefClient     func(terraform.UIOutput, communicator.Communicator) error
+	createConfigFiles     func(terraform.UIOutput, communicator.Communicator) error
+	fetchChefCertificates func(terraform.UIOutput, communicator.Communicator) error
+	runChefClient         func(terraform.UIOutput, communicator.Communicator) error
+	useSudo               bool
+
+	// Deprecated Fields
+	SecretKeyPath     string `mapstructure:"secret_key_path"`
+	ValidationKeyPath string `mapstructure:"validation_key_path"`
 }
 
 // ResourceProvisioner represents a generic chef provisioner
@@ -92,20 +127,33 @@ func (r *ResourceProvisioner) Apply(
 		return err
 	}
 
+	if p.OSType == "" {
+		switch s.Ephemeral.ConnInfo["type"] {
+		case "ssh", "": // The default connection type is ssh, so if the type is empty assume ssh
+			p.OSType = "linux"
+		case "winrm":
+			p.OSType = "windows"
+		default:
+			return fmt.Errorf("Unsupported connection type: %s", s.Ephemeral.ConnInfo["type"])
+		}
+	}
+
 	// Set some values based on the targeted OS
-	switch s.Ephemeral.ConnInfo["type"] {
-	case "ssh", "": // The default connection type is ssh, so if the type is empty use ssh
-		p.installChefClient = p.sshInstallChefClient
-		p.createConfigFiles = p.sshCreateConfigFiles
-		p.runChefClient = p.runChefClientFunc(linuxConfDir)
+	switch p.OSType {
+	case "linux":
+		p.installChefClient = p.linuxInstallChefClient
+		p.createConfigFiles = p.linuxCreateConfigFiles
+		p.fetchChefCertificates = p.fetchChefCertificatesFunc(linuxKnifeCmd, linuxConfDir)
+		p.runChefClient = p.runChefClientFunc(linuxChefCmd, linuxConfDir)
 		p.useSudo = !p.PreventSudo && s.Ephemeral.ConnInfo["user"] != "root"
-	case "winrm":
-		p.installChefClient = p.winrmInstallChefClient
-		p.createConfigFiles = p.winrmCreateConfigFiles
-		p.runChefClient = p.runChefClientFunc(windowsConfDir)
+	case "windows":
+		p.installChefClient = p.windowsInstallChefClient
+		p.createConfigFiles = p.windowsCreateConfigFiles
+		p.fetchChefCertificates = p.fetchChefCertificatesFunc(windowsKnifeCmd, windowsConfDir)
+		p.runChefClient = p.runChefClientFunc(windowsChefCmd, windowsConfDir)
 		p.useSudo = false
 	default:
-		return fmt.Errorf("Unsupported connection type: %s", s.Ephemeral.ConnInfo["type"])
+		return fmt.Errorf("Unsupported os type: %s", p.OSType)
 	}
 
 	// Get a new communicator
@@ -135,6 +183,13 @@ func (r *ResourceProvisioner) Apply(
 		return err
 	}
 
+	if p.FetchChefCertificates {
+		o.Output("Fetch Chef certificates...")
+		if err := p.fetchChefCertificates(o, comm); err != nil {
+			return err
+		}
+	}
+
 	o.Output("Starting initial Chef-Client run...")
 	if err := p.runChefClient(o, comm); err != nil {
 		return err
@@ -154,7 +209,7 @@ func (r *ResourceProvisioner) Validate(c *terraform.ResourceConfig) (ws []string
 	if p.NodeName == "" {
 		es = append(es, fmt.Errorf("Key not found: node_name"))
 	}
-	if p.RunList == nil {
+	if !p.UsePolicyfile && p.RunList == nil {
 		es = append(es, fmt.Errorf("Key not found: run_list"))
 	}
 	if p.ServerURL == "" {
@@ -163,8 +218,27 @@ func (r *ResourceProvisioner) Validate(c *terraform.ResourceConfig) (ws []string
 	if p.ValidationClientName == "" {
 		es = append(es, fmt.Errorf("Key not found: validation_client_name"))
 	}
-	if p.ValidationKeyPath == "" {
-		es = append(es, fmt.Errorf("Key not found: validation_key_path"))
+	if p.ValidationKey == "" && p.ValidationKeyPath == "" {
+		es = append(es, fmt.Errorf(
+			"One of validation_key or the deprecated validation_key_path must be provided"))
+	}
+	if p.UsePolicyfile && p.PolicyName == "" {
+		es = append(es, fmt.Errorf("Policyfile enabled but key not found: policy_name"))
+	}
+	if p.UsePolicyfile && p.PolicyGroup == "" {
+		es = append(es, fmt.Errorf("Policyfile enabled but key not found: policy_group"))
+	}
+	if p.ValidationKeyPath != "" {
+		ws = append(ws, "validation_key_path is deprecated, please use "+
+			"validation_key instead and load the key contents via file()")
+	}
+	if p.SecretKeyPath != "" {
+		ws = append(ws, "secret_key_path is deprecated, please use "+
+			"secret_key instead and load the key contents via file()")
+	}
+	if _, ok := c.Config["attributes"]; ok {
+		ws = append(ws, "using map style attribute values is deprecated, "+
+			" please use a single raw JSON string instead")
 	}
 
 	return ws, es
@@ -183,16 +257,23 @@ func (r *ResourceProvisioner) decodeConfig(c *terraform.ResourceConfig) (*Provis
 		return nil, err
 	}
 
-	// We need to decode this twice. Once for the Raw config and once
-	// for the parsed Config. This makes sure that all values are there
-	// even if some still need to be interpolated later on.
-	// Without this the validation will fail when using a variable for
-	// a required parameter (the node_name for example).
-	if err := dec.Decode(c.Raw); err != nil {
-		return nil, err
+	// We need to merge both configs into a single map first. Order is
+	// important as we need to make sure interpolated values are used
+	// over raw values. This makes sure that all values are there even
+	// if some still need to be interpolated later on. Without this
+	// the validation will fail when using a variable for a required
+	// parameter (the node_name for example).
+	m := make(map[string]interface{})
+
+	for k, v := range c.Raw {
+		m[k] = v
 	}
 
-	if err := dec.Decode(c.Config); err != nil {
+	for k, v := range c.Config {
+		m[k] = v
+	}
+
+	if err := dec.Decode(m); err != nil {
 		return nil, err
 	}
 
@@ -200,12 +281,20 @@ func (r *ResourceProvisioner) decodeConfig(c *terraform.ResourceConfig) (*Provis
 		p.Environment = defaultEnv
 	}
 
-	if p.ValidationKeyPath != "" {
-		keyPath, err := homedir.Expand(p.ValidationKeyPath)
+	for i, hint := range p.OhaiHints {
+		hintPath, err := homedir.Expand(hint)
 		if err != nil {
-			return nil, fmt.Errorf("Error expanding the validation key path: %v", err)
+			return nil, fmt.Errorf("Error expanding the path %s: %v", hint, err)
 		}
-		p.ValidationKeyPath = keyPath
+		p.OhaiHints[i] = hintPath
+	}
+
+	if p.ValidationKey == "" && p.ValidationKeyPath != "" {
+		p.ValidationKey = p.ValidationKeyPath
+	}
+
+	if p.SecretKey == "" && p.SecretKeyPath != "" {
+		p.SecretKey = p.SecretKeyPath
 	}
 
 	if attrs, ok := c.Config["attributes"]; ok {
@@ -213,6 +302,14 @@ func (r *ResourceProvisioner) decodeConfig(c *terraform.ResourceConfig) (*Provis
 		if err != nil {
 			return nil, fmt.Errorf("Error parsing the attributes: %v", err)
 		}
+	}
+
+	if attrs, ok := c.Config["attributes_json"]; ok {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(attrs.(string)), &m); err != nil {
+			return nil, fmt.Errorf("Error parsing the attributes: %v", err)
+		}
+		p.Attributes = m
 	}
 
 	return p, nil
@@ -235,7 +332,7 @@ func rawToJSON(raw interface{}) (interface{}, error) {
 
 		return s[0], nil
 	default:
-		return raw, nil
+		return s, nil
 	}
 }
 
@@ -257,11 +354,30 @@ func retryFunc(timeout time.Duration, f func() error) error {
 	}
 }
 
+func (p *Provisioner) fetchChefCertificatesFunc(
+	knifeCmd string,
+	confDir string) func(terraform.UIOutput, communicator.Communicator) error {
+	return func(o terraform.UIOutput, comm communicator.Communicator) error {
+		clientrb := path.Join(confDir, clienrb)
+		cmd := fmt.Sprintf("%s ssl fetch -c %s", knifeCmd, clientrb)
+
+		return p.runCommand(o, comm, cmd)
+	}
+}
+
 func (p *Provisioner) runChefClientFunc(
+	chefCmd string,
 	confDir string) func(terraform.UIOutput, communicator.Communicator) error {
 	return func(o terraform.UIOutput, comm communicator.Communicator) error {
 		fb := path.Join(confDir, firstBoot)
-		cmd := fmt.Sprintf("chef-client -j %q -E %q", fb, p.Environment)
+		var cmd string
+
+		// Policyfiles do not support chef environments, so don't pass the `-E` flag.
+		if p.UsePolicyfile {
+			cmd = fmt.Sprintf("%s -j %q", chefCmd, fb)
+		} else {
+			cmd = fmt.Sprintf("%s -j %q -E %q", chefCmd, fb, p.Environment)
+		}
 
 		if p.LogToFile {
 			if err := os.MkdirAll(logfileDir, 0755); err != nil {
@@ -313,16 +429,27 @@ func (p *Provisioner) deployConfigFiles(
 	o terraform.UIOutput,
 	comm communicator.Communicator,
 	confDir string) error {
-	// Open the validation  key file
-	f, err := os.Open(p.ValidationKeyPath)
+	contents, _, err := pathorcontents.Read(p.ValidationKey)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	f := strings.NewReader(contents)
 
 	// Copy the validation key to the new instance
 	if err := comm.Upload(path.Join(confDir, validationKey), f); err != nil {
 		return fmt.Errorf("Uploading %s failed: %v", validationKey, err)
+	}
+
+	if p.SecretKey != "" {
+		contents, _, err := pathorcontents.Read(p.SecretKey)
+		if err != nil {
+			return err
+		}
+		s := strings.NewReader(contents)
+		// Copy the secret key to the new instance
+		if err := comm.Upload(path.Join(confDir, secretKey), s); err != nil {
+			return fmt.Errorf("Uploading %s failed: %v", secretKey, err)
+		}
 	}
 
 	// Make strings.Join available for use within the template
@@ -358,7 +485,9 @@ func (p *Provisioner) deployConfigFiles(
 	}
 
 	// Add the initial runlist to the first boot settings
-	fb["run_list"] = p.RunList
+	if !p.UsePolicyfile {
+		fb["run_list"] = p.RunList
+	}
 
 	// Marshal the first boot settings to JSON
 	d, err := json.Marshal(fb)
@@ -369,6 +498,27 @@ func (p *Provisioner) deployConfigFiles(
 	// Copy the first-boot.json to the new instance
 	if err := comm.Upload(path.Join(confDir, firstBoot), bytes.NewReader(d)); err != nil {
 		return fmt.Errorf("Uploading %s failed: %v", firstBoot, err)
+	}
+
+	return nil
+}
+
+func (p *Provisioner) deployOhaiHints(
+	o terraform.UIOutput,
+	comm communicator.Communicator,
+	hintDir string) error {
+	for _, hint := range p.OhaiHints {
+		// Open the hint file
+		f, err := os.Open(hint)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		// Copy the hint to the new instance
+		if err := comm.Upload(path.Join(hintDir, path.Base(hint)), f); err != nil {
+			return fmt.Errorf("Uploading %s failed: %v", path.Base(hint), err)
+		}
 	}
 
 	return nil

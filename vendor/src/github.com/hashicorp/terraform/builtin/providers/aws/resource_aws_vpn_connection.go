@@ -2,8 +2,10 @@ package aws
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -14,6 +16,34 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
+
+type XmlVpnConnectionConfig struct {
+	Tunnels []XmlIpsecTunnel `xml:"ipsec_tunnel"`
+}
+
+type XmlIpsecTunnel struct {
+	OutsideAddress string `xml:"vpn_gateway>tunnel_outside_address>ip_address"`
+	PreSharedKey   string `xml:"ike>pre_shared_key"`
+}
+
+type TunnelInfo struct {
+	Tunnel1Address      string
+	Tunnel1PreSharedKey string
+	Tunnel2Address      string
+	Tunnel2PreSharedKey string
+}
+
+func (slice XmlVpnConnectionConfig) Len() int {
+	return len(slice.Tunnels)
+}
+
+func (slice XmlVpnConnectionConfig) Less(i, j int) bool {
+	return slice.Tunnels[i].OutsideAddress < slice.Tunnels[j].OutsideAddress
+}
+
+func (slice XmlVpnConnectionConfig) Swap(i, j int) {
+	slice.Tunnels[i], slice.Tunnels[j] = slice.Tunnels[j], slice.Tunnels[i]
+}
 
 func resourceAwsVpnConnection() *schema.Resource {
 	return &schema.Resource{
@@ -54,6 +84,26 @@ func resourceAwsVpnConnection() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 				Optional: true,
+			},
+
+			"tunnel1_address": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel1_preshared_key": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel2_address": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
+			"tunnel2_preshared_key": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
 			},
 
 			"routes": &schema.Schema{
@@ -142,28 +192,28 @@ func resourceAwsVpnConnection() *schema.Resource {
 func resourceAwsVpnConnectionCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
-	connectOpts := &ec2.VPNConnectionOptionsSpecification{
-		StaticRoutesOnly: aws.Boolean(d.Get("static_routes_only").(bool)),
+	connectOpts := &ec2.VpnConnectionOptionsSpecification{
+		StaticRoutesOnly: aws.Bool(d.Get("static_routes_only").(bool)),
 	}
 
-	createOpts := &ec2.CreateVPNConnectionInput{
-		CustomerGatewayID: aws.String(d.Get("customer_gateway_id").(string)),
+	createOpts := &ec2.CreateVpnConnectionInput{
+		CustomerGatewayId: aws.String(d.Get("customer_gateway_id").(string)),
 		Options:           connectOpts,
 		Type:              aws.String(d.Get("type").(string)),
-		VPNGatewayID:      aws.String(d.Get("vpn_gateway_id").(string)),
+		VpnGatewayId:      aws.String(d.Get("vpn_gateway_id").(string)),
 	}
 
 	// Create the VPN Connection
 	log.Printf("[DEBUG] Creating vpn connection")
-	resp, err := conn.CreateVPNConnection(createOpts)
+	resp, err := conn.CreateVpnConnection(createOpts)
 	if err != nil {
 		return fmt.Errorf("Error creating vpn connection: %s", err)
 	}
 
 	// Store the ID
-	vpnConnection := resp.VPNConnection
-	d.SetId(*vpnConnection.VPNConnectionID)
-	log.Printf("[INFO] VPN connection ID: %s", *vpnConnection.VPNConnectionID)
+	vpnConnection := resp.VpnConnection
+	d.SetId(*vpnConnection.VpnConnectionId)
+	log.Printf("[INFO] VPN connection ID: %s", *vpnConnection.VpnConnectionId)
 
 	// Wait for the connection to become available. This has an obscenely
 	// high default timeout because AWS VPN connections are notoriously
@@ -171,8 +221,8 @@ func resourceAwsVpnConnectionCreate(d *schema.ResourceData, meta interface{}) er
 	// more frequently than every ten seconds.
 	stateConf := &resource.StateChangeConf{
 		Pending:    []string{"pending"},
-		Target:     "available",
-		Refresh:    vpnConnectionRefreshFunc(conn, *vpnConnection.VPNConnectionID),
+		Target:     []string{"available"},
+		Refresh:    vpnConnectionRefreshFunc(conn, *vpnConnection.VpnConnectionId),
 		Timeout:    30 * time.Minute,
 		Delay:      10 * time.Second,
 		MinTimeout: 10 * time.Second,
@@ -182,7 +232,7 @@ func resourceAwsVpnConnectionCreate(d *schema.ResourceData, meta interface{}) er
 	if stateErr != nil {
 		return fmt.Errorf(
 			"Error waiting for VPN connection (%s) to become ready: %s",
-			*vpnConnection.VPNConnectionID, err)
+			*vpnConnection.VpnConnectionId, err)
 	}
 
 	// Create tags.
@@ -196,8 +246,8 @@ func resourceAwsVpnConnectionCreate(d *schema.ResourceData, meta interface{}) er
 
 func vpnConnectionRefreshFunc(conn *ec2.EC2, connectionId string) resource.StateRefreshFunc {
 	return func() (interface{}, string, error) {
-		resp, err := conn.DescribeVPNConnections(&ec2.DescribeVPNConnectionsInput{
-			VPNConnectionIDs: []*string{aws.String(connectionId)},
+		resp, err := conn.DescribeVpnConnections(&ec2.DescribeVpnConnectionsInput{
+			VpnConnectionIds: []*string{aws.String(connectionId)},
 		})
 
 		if err != nil {
@@ -209,11 +259,11 @@ func vpnConnectionRefreshFunc(conn *ec2.EC2, connectionId string) resource.State
 			}
 		}
 
-		if resp == nil || len(resp.VPNConnections) == 0 {
+		if resp == nil || len(resp.VpnConnections) == 0 {
 			return nil, "", nil
 		}
 
-		connection := resp.VPNConnections[0]
+		connection := resp.VpnConnections[0]
 		return connection, *connection.State, nil
 	}
 }
@@ -221,8 +271,8 @@ func vpnConnectionRefreshFunc(conn *ec2.EC2, connectionId string) resource.State
 func resourceAwsVpnConnectionRead(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
-	resp, err := conn.DescribeVPNConnections(&ec2.DescribeVPNConnectionsInput{
-		VPNConnectionIDs: []*string{aws.String(d.Id())},
+	resp, err := conn.DescribeVpnConnections(&ec2.DescribeVpnConnectionsInput{
+		VpnConnectionIds: []*string{aws.String(d.Id())},
 	})
 	if err != nil {
 		if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidVpnConnectionID.NotFound" {
@@ -234,15 +284,15 @@ func resourceAwsVpnConnectionRead(d *schema.ResourceData, meta interface{}) erro
 		}
 	}
 
-	if len(resp.VPNConnections) != 1 {
+	if len(resp.VpnConnections) != 1 {
 		return fmt.Errorf("[ERROR] Error finding VPN connection: %s", d.Id())
 	}
 
-	vpnConnection := resp.VPNConnections[0]
+	vpnConnection := resp.VpnConnections[0]
 
 	// Set attributes under the user's control.
-	d.Set("vpn_gateway_id", vpnConnection.VPNGatewayID)
-	d.Set("customer_gateway_id", vpnConnection.CustomerGatewayID)
+	d.Set("vpn_gateway_id", vpnConnection.VpnGatewayId)
+	d.Set("customer_gateway_id", vpnConnection.CustomerGatewayId)
 	d.Set("type", vpnConnection.Type)
 	d.Set("tags", tagsToMap(vpnConnection.Tags))
 
@@ -254,13 +304,20 @@ func resourceAwsVpnConnectionRead(d *schema.ResourceData, meta interface{}) erro
 
 	// Set read only attributes.
 	d.Set("customer_gateway_configuration", vpnConnection.CustomerGatewayConfiguration)
-	if err := d.Set("vgw_telemetry", telemetryToMapList(vpnConnection.VGWTelemetry)); err != nil {
+
+	if vpnConnection.CustomerGatewayConfiguration != nil {
+		tunnelInfo := xmlConfigToTunnelInfo(*vpnConnection.CustomerGatewayConfiguration)
+		d.Set("tunnel1_address", tunnelInfo.Tunnel1Address)
+		d.Set("tunnel1_preshared_key", tunnelInfo.Tunnel1PreSharedKey)
+		d.Set("tunnel2_address", tunnelInfo.Tunnel2Address)
+		d.Set("tunnel2_preshared_key", tunnelInfo.Tunnel2PreSharedKey)
+	}
+
+	if err := d.Set("vgw_telemetry", telemetryToMapList(vpnConnection.VgwTelemetry)); err != nil {
 		return err
 	}
-	if vpnConnection.Routes != nil {
-		if err := d.Set("routes", routesToMapList(vpnConnection.Routes)); err != nil {
-			return err
-		}
+	if err := d.Set("routes", routesToMapList(vpnConnection.Routes)); err != nil {
+		return err
 	}
 
 	return nil
@@ -282,8 +339,8 @@ func resourceAwsVpnConnectionUpdate(d *schema.ResourceData, meta interface{}) er
 func resourceAwsVpnConnectionDelete(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
-	_, err := conn.DeleteVPNConnection(&ec2.DeleteVPNConnectionInput{
-		VPNConnectionID: aws.String(d.Id()),
+	_, err := conn.DeleteVpnConnection(&ec2.DeleteVpnConnectionInput{
+		VpnConnectionId: aws.String(d.Id()),
 	})
 	if err != nil {
 		if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidVpnConnectionID.NotFound" {
@@ -303,7 +360,7 @@ func resourceAwsVpnConnectionDelete(d *schema.ResourceData, meta interface{}) er
 	// VPC stack can safely run.
 	stateConf := &resource.StateChangeConf{
 		Pending:    []string{"deleting"},
-		Target:     "deleted",
+		Target:     []string{"deleted"},
 		Refresh:    vpnConnectionRefreshFunc(conn, d.Id()),
 		Timeout:    30 * time.Minute,
 		Delay:      10 * time.Second,
@@ -320,11 +377,11 @@ func resourceAwsVpnConnectionDelete(d *schema.ResourceData, meta interface{}) er
 }
 
 // routesToMapList turns the list of routes into a list of maps.
-func routesToMapList(routes []*ec2.VPNStaticRoute) []map[string]interface{} {
+func routesToMapList(routes []*ec2.VpnStaticRoute) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(routes))
 	for _, r := range routes {
 		staticRoute := make(map[string]interface{})
-		staticRoute["destination_cidr_block"] = *r.DestinationCIDRBlock
+		staticRoute["destination_cidr_block"] = *r.DestinationCidrBlock
 		staticRoute["state"] = *r.State
 
 		if r.Source != nil {
@@ -338,12 +395,12 @@ func routesToMapList(routes []*ec2.VPNStaticRoute) []map[string]interface{} {
 }
 
 // telemetryToMapList turns the VGW telemetry into a list of maps.
-func telemetryToMapList(telemetry []*ec2.VGWTelemetry) []map[string]interface{} {
+func telemetryToMapList(telemetry []*ec2.VgwTelemetry) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(telemetry))
 	for _, t := range telemetry {
 		vgw := make(map[string]interface{})
 		vgw["accepted_route_count"] = *t.AcceptedRouteCount
-		vgw["outside_ip_address"] = *t.OutsideIPAddress
+		vgw["outside_ip_address"] = *t.OutsideIpAddress
 		vgw["status"] = *t.Status
 		vgw["status_message"] = *t.StatusMessage
 
@@ -354,4 +411,22 @@ func telemetryToMapList(telemetry []*ec2.VGWTelemetry) []map[string]interface{} 
 	}
 
 	return result
+}
+
+func xmlConfigToTunnelInfo(xmlConfig string) TunnelInfo {
+	var vpnConfig XmlVpnConnectionConfig
+	xml.Unmarshal([]byte(xmlConfig), &vpnConfig)
+
+	// don't expect consistent ordering from the XML
+	sort.Sort(vpnConfig)
+
+	tunnelInfo := TunnelInfo{
+		Tunnel1Address:      vpnConfig.Tunnels[0].OutsideAddress,
+		Tunnel1PreSharedKey: vpnConfig.Tunnels[0].PreSharedKey,
+
+		Tunnel2Address:      vpnConfig.Tunnels[1].OutsideAddress,
+		Tunnel2PreSharedKey: vpnConfig.Tunnels[1].PreSharedKey,
+	}
+
+	return tunnelInfo
 }

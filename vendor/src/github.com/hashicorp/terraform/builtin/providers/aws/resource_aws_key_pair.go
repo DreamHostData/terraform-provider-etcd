@@ -2,6 +2,7 @@ package aws
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -17,6 +18,12 @@ func resourceAwsKeyPair() *schema.Resource {
 		Read:   resourceAwsKeyPairRead,
 		Update: nil,
 		Delete: resourceAwsKeyPairDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
+
+		SchemaVersion: 1,
+		MigrateState:  resourceAwsKeyPairMigrateState,
 
 		Schema: map[string]*schema.Schema{
 			"key_name": &schema.Schema{
@@ -29,6 +36,14 @@ func resourceAwsKeyPair() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				StateFunc: func(v interface{}) string {
+					switch v.(type) {
+					case string:
+						return strings.TrimSpace(v.(string))
+					default:
+						return ""
+					}
+				},
 			},
 			"fingerprint": &schema.Schema{
 				Type:     schema.TypeString,
@@ -45,6 +60,7 @@ func resourceAwsKeyPairCreate(d *schema.ResourceData, meta interface{}) error {
 	if keyName == "" {
 		keyName = resource.UniqueId()
 	}
+
 	publicKey := d.Get("public_key").(string)
 	req := &ec2.ImportKeyPairInput{
 		KeyName:           aws.String(keyName),

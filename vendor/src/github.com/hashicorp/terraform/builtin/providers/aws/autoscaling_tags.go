@@ -122,8 +122,8 @@ func autoscalingTagsFromMap(m map[string]interface{}, resourceID string) []*auto
 		result = append(result, &autoscaling.Tag{
 			Key:               aws.String(k),
 			Value:             aws.String(attr["value"].(string)),
-			PropagateAtLaunch: aws.Boolean(attr["propagate_at_launch"].(bool)),
-			ResourceID:        aws.String(resourceID),
+			PropagateAtLaunch: aws.Bool(attr["propagate_at_launch"].(bool)),
+			ResourceId:        aws.String(resourceID),
 			ResourceType:      aws.String("auto-scaling-group"),
 		})
 	}
@@ -154,6 +154,20 @@ func autoscalingTagDescriptionsToMap(ts *[]*autoscaling.TagDescription) map[stri
 			"propagate_at_launch": *t.PropagateAtLaunch,
 		}
 		tags[*t.Key] = tag
+	}
+
+	return tags
+}
+
+// autoscalingTagDescriptionsToSlice turns the list of tags into a slice.
+func autoscalingTagDescriptionsToSlice(ts []*autoscaling.TagDescription) []map[string]interface{} {
+	tags := make([]map[string]interface{}, 0, len(ts))
+	for _, t := range ts {
+		tags = append(tags, map[string]interface{}{
+			"key":                 *t.Key,
+			"value":               *t.Value,
+			"propagate_at_launch": *t.PropagateAtLaunch,
+		})
 	}
 
 	return tags

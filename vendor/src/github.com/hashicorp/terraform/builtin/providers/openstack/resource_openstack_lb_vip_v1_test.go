@@ -116,6 +116,10 @@ var testAccLBV1VIP_basic = fmt.Sprintf(`
     protocol = "HTTP"
     port = 80
     pool_id = "${openstack_lb_pool_v1.pool_1.id}"
+    admin_state_up = true
+    persistence {
+      type = "SOURCE_IP"
+    }
   }`,
 	OS_REGION_NAME, OS_REGION_NAME, OS_REGION_NAME)
 
@@ -148,5 +152,9 @@ var testAccLBV1VIP_update = fmt.Sprintf(`
     protocol = "HTTP"
     port = 80
     pool_id = "${openstack_lb_pool_v1.pool_1.id}"
+    persistence {
+      type = "SOURCE_IP"
+    }
+    admin_state_up = true
   }`,
 	OS_REGION_NAME, OS_REGION_NAME, OS_REGION_NAME)

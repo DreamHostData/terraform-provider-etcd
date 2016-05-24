@@ -1,10 +1,14 @@
 package aws
 
 import (
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
 
@@ -36,9 +40,9 @@ func resourceAwsEcsClusterCreate(d *schema.ResourceData, meta interface{}) error
 	if err != nil {
 		return err
 	}
-	log.Printf("[DEBUG] ECS cluster %s created", *out.Cluster.ClusterARN)
+	log.Printf("[DEBUG] ECS cluster %s created", *out.Cluster.ClusterArn)
 
-	d.SetId(*out.Cluster.ClusterARN)
+	d.SetId(*out.Cluster.ClusterArn)
 	d.Set("name", *out.Cluster.ClusterName)
 	return nil
 }
@@ -54,11 +58,25 @@ func resourceAwsEcsClusterRead(d *schema.ResourceData, meta interface{}) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("[DEBUG] Received ECS clusters: %#v", out.Clusters)
+	log.Printf("[DEBUG] Received ECS clusters: %s", out.Clusters)
 
-	d.SetId(*out.Clusters[0].ClusterARN)
-	d.Set("name", *out.Clusters[0].ClusterName)
+	for _, c := range out.Clusters {
+		if *c.ClusterName == clusterName {
+			// Status==INACTIVE means deleted cluster
+			if *c.Status == "INACTIVE" {
+				log.Printf("[DEBUG] Removing ECS cluster %q because it's INACTIVE", *c.ClusterArn)
+				d.SetId("")
+				return nil
+			}
 
+			d.SetId(*c.ClusterArn)
+			d.Set("name", c.ClusterName)
+			return nil
+		}
+	}
+
+	log.Printf("[ERR] No matching ECS Cluster found for (%s)", d.Id())
+	d.SetId("")
 	return nil
 }
 
@@ -67,14 +85,65 @@ func resourceAwsEcsClusterDelete(d *schema.ResourceData, meta interface{}) error
 
 	log.Printf("[DEBUG] Deleting ECS cluster %s", d.Id())
 
-	// TODO: Handle ClientException: The Cluster cannot be deleted while Container Instances are active.
-	// TODO: Handle ClientException: The Cluster cannot be deleted while Services are active.
+	err := resource.Retry(10*time.Minute, func() *resource.RetryError {
+		out, err := conn.DeleteCluster(&ecs.DeleteClusterInput{
+			Cluster: aws.String(d.Id()),
+		})
 
-	out, err := conn.DeleteCluster(&ecs.DeleteClusterInput{
-		Cluster: aws.String(d.Id()),
+		if err == nil {
+			log.Printf("[DEBUG] ECS cluster %s deleted: %s", d.Id(), out)
+			return nil
+		}
+
+		awsErr, ok := err.(awserr.Error)
+		if !ok {
+			return resource.NonRetryableError(err)
+		}
+
+		if awsErr.Code() == "ClusterContainsContainerInstancesException" {
+			log.Printf("[TRACE] Retrying ECS cluster %q deletion after %q", d.Id(), awsErr.Code())
+			return resource.RetryableError(err)
+		}
+
+		if awsErr.Code() == "ClusterContainsServicesException" {
+			log.Printf("[TRACE] Retrying ECS cluster %q deletion after %q", d.Id(), awsErr.Code())
+			return resource.RetryableError(err)
+		}
+
+		return resource.NonRetryableError(err)
 	})
+	if err != nil {
+		return err
+	}
 
-	log.Printf("[DEBUG] ECS cluster %s deleted: %#v", d.Id(), out)
+	clusterName := d.Get("name").(string)
+	err = resource.Retry(5*time.Minute, func() *resource.RetryError {
+		log.Printf("[DEBUG] Checking if ECS Cluster %q is INACTIVE", d.Id())
+		out, err := conn.DescribeClusters(&ecs.DescribeClustersInput{
+			Clusters: []*string{aws.String(clusterName)},
+		})
 
-	return err
+		for _, c := range out.Clusters {
+			if *c.ClusterName == clusterName {
+				if *c.Status == "INACTIVE" {
+					return nil
+				}
+
+				return resource.RetryableError(
+					fmt.Errorf("ECS Cluster %q is still %q", clusterName, *c.Status))
+			}
+		}
+
+		if err != nil {
+			return resource.NonRetryableError(err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[DEBUG] ECS cluster %q deleted", d.Id())
+	return nil
 }

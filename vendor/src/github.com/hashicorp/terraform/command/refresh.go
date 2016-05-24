@@ -18,6 +18,7 @@ func (c *RefreshCommand) Run(args []string) int {
 
 	cmdFlags := c.Meta.flagSet("refresh")
 	cmdFlags.StringVar(&c.Meta.statePath, "state", DefaultStateFilename, "path")
+	cmdFlags.IntVar(&c.Meta.parallelism, "parallelism", 0, "parallelism")
 	cmdFlags.StringVar(&c.Meta.stateOutPath, "state-out", "", "path")
 	cmdFlags.StringVar(&c.Meta.backupPath, "backup", "", "path")
 	cmdFlags.Usage = func() { c.Ui.Error(c.Help()) }
@@ -78,18 +79,21 @@ func (c *RefreshCommand) Run(args []string) int {
 
 	// Build the context based on the arguments given
 	ctx, _, err := c.Context(contextOpts{
-		Path:      configPath,
-		StatePath: c.Meta.statePath,
+		Path:        configPath,
+		StatePath:   c.Meta.statePath,
+		Parallelism: c.Meta.parallelism,
 	})
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	if !validateContext(ctx, c.Ui) {
-		return 1
-	}
+
 	if err := ctx.Input(c.InputMode()); err != nil {
 		c.Ui.Error(fmt.Sprintf("Error configuring: %s", err))
+		return 1
+	}
+
+	if !validateContext(ctx, c.Ui) {
 		return 1
 	}
 
@@ -103,6 +107,10 @@ func (c *RefreshCommand) Run(args []string) int {
 	if err := c.Meta.PersistState(newState); err != nil {
 		c.Ui.Error(fmt.Sprintf("Error writing state file: %s", err))
 		return 1
+	}
+
+	if outputs := outputsAsString(newState, ctx.Module().Config().Outputs, true); outputs != "" {
+		c.Ui.Output(c.Colorize().Color(outputs))
 	}
 
 	return 0

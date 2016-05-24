@@ -67,6 +67,7 @@ type DecoderConfig struct {
 	//     FALSE, false, False. Anything else is an error)
 	//   - empty array = empty map and vice versa
 	//   - negative numbers to overflowed uint values (base 10)
+	//   - slice of maps to a merged map
 	//
 	WeaklyTypedInput bool
 
@@ -456,15 +457,30 @@ func (d *Decoder) decodeMap(name string, data interface{}, val reflect.Value) er
 	// Check input type
 	dataVal := reflect.Indirect(reflect.ValueOf(data))
 	if dataVal.Kind() != reflect.Map {
-		// Accept empty array/slice instead of an empty map in weakly typed mode
-		if d.config.WeaklyTypedInput &&
-			(dataVal.Kind() == reflect.Slice || dataVal.Kind() == reflect.Array) &&
-			dataVal.Len() == 0 {
-			val.Set(valMap)
-			return nil
-		} else {
-			return fmt.Errorf("'%s' expected a map, got '%s'", name, dataVal.Kind())
+		// In weak mode, we accept a slice of maps as an input...
+		if d.config.WeaklyTypedInput {
+			switch dataVal.Kind() {
+			case reflect.Array, reflect.Slice:
+				// Special case for BC reasons (covered by tests)
+				if dataVal.Len() == 0 {
+					val.Set(valMap)
+					return nil
+				}
+
+				for i := 0; i < dataVal.Len(); i++ {
+					err := d.decode(
+						fmt.Sprintf("%s[%d]", name, i),
+						dataVal.Index(i).Interface(), val)
+					if err != nil {
+						return err
+					}
+				}
+
+				return nil
+			}
 		}
+
+		return fmt.Errorf("'%s' expected a map, got '%s'", name, dataVal.Kind())
 	}
 
 	// Accumulate errors
@@ -607,32 +623,37 @@ func (d *Decoder) decodeStruct(name string, data interface{}, val reflect.Value)
 		structs = structs[1:]
 
 		structType := structVal.Type()
+
 		for i := 0; i < structType.NumField(); i++ {
 			fieldType := structType.Field(i)
+			fieldKind := fieldType.Type.Kind()
 
 			if fieldType.Anonymous {
-				fieldKind := fieldType.Type.Kind()
 				if fieldKind != reflect.Struct {
 					errors = appendErrors(errors,
 						fmt.Errorf("%s: unsupported type: %s", fieldType.Name, fieldKind))
 					continue
 				}
+			}
 
-				// We have an embedded field. We "squash" the fields down
-				// if specified in the tag.
-				squash := false
-				tagParts := strings.Split(fieldType.Tag.Get(d.config.TagName), ",")
-				for _, tag := range tagParts[1:] {
-					if tag == "squash" {
-						squash = true
-						break
-					}
+			// If "squash" is specified in the tag, we squash the field down.
+			squash := false
+			tagParts := strings.Split(fieldType.Tag.Get(d.config.TagName), ",")
+			for _, tag := range tagParts[1:] {
+				if tag == "squash" {
+					squash = true
+					break
 				}
+			}
 
-				if squash {
+			if squash {
+				if fieldKind != reflect.Struct {
+					errors = appendErrors(errors,
+						fmt.Errorf("%s: unsupported type for squash: %s", fieldType.Name, fieldKind))
+				} else {
 					structs = append(structs, val.FieldByName(fieldType.Name))
-					continue
 				}
+				continue
 			}
 
 			// Normal struct field, store it away

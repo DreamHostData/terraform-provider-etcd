@@ -18,9 +18,18 @@ func TestMissingProvisionerTransformer(t *testing.T) {
 		}
 	}
 
-	transform := &MissingProvisionerTransformer{Provisioners: []string{"foo"}}
-	if err := transform.Transform(&g); err != nil {
-		t.Fatalf("err: %s", err)
+	{
+		transform := &MissingProvisionerTransformer{Provisioners: []string{"shell"}}
+		if err := transform.Transform(&g); err != nil {
+			t.Fatalf("err: %s", err)
+		}
+	}
+
+	{
+		transform := &ProvisionerTransformer{}
+		if err := transform.Transform(&g); err != nil {
+			t.Fatalf("err: %s", err)
+		}
 	}
 
 	actual := strings.TrimSpace(g.String())
@@ -30,8 +39,8 @@ func TestMissingProvisionerTransformer(t *testing.T) {
 	}
 }
 
-func TestPruneProvisionerTransformer(t *testing.T) {
-	mod := testModule(t, "transform-provisioner-prune")
+func TestCloseProvisionerTransformer(t *testing.T) {
+	mod := testModule(t, "transform-provisioner-basic")
 
 	g := Graph{Path: RootModulePath}
 	{
@@ -42,8 +51,7 @@ func TestPruneProvisionerTransformer(t *testing.T) {
 	}
 
 	{
-		transform := &MissingProvisionerTransformer{
-			Provisioners: []string{"foo", "bar"}}
+		transform := &MissingProvisionerTransformer{Provisioners: []string{"shell"}}
 		if err := transform.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
@@ -57,27 +65,26 @@ func TestPruneProvisionerTransformer(t *testing.T) {
 	}
 
 	{
-		transform := &PruneProvisionerTransformer{}
+		transform := &CloseProvisionerTransformer{}
 		if err := transform.Transform(&g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
 	}
 
 	actual := strings.TrimSpace(g.String())
-	expected := strings.TrimSpace(testTransformPruneProvisionerBasicStr)
+	expected := strings.TrimSpace(testTransformCloseProvisionerBasicStr)
 	if actual != expected {
 		t.Fatalf("bad:\n\n%s", actual)
 	}
 }
-
-func TestGraphNodeMissingProvisioner_impl(t *testing.T) {
-	var _ dag.Vertex = new(graphNodeMissingProvisioner)
-	var _ dag.NamedVertex = new(graphNodeMissingProvisioner)
-	var _ GraphNodeProvisioner = new(graphNodeMissingProvisioner)
+func TestGraphNodeProvisioner_impl(t *testing.T) {
+	var _ dag.Vertex = new(graphNodeProvisioner)
+	var _ dag.NamedVertex = new(graphNodeProvisioner)
+	var _ GraphNodeProvisioner = new(graphNodeProvisioner)
 }
 
-func TestGraphNodeMissingProvisioner_ProvisionerName(t *testing.T) {
-	n := &graphNodeMissingProvisioner{ProvisionerNameValue: "foo"}
+func TestGraphNodeProvisioner_ProvisionerName(t *testing.T) {
+	n := &graphNodeProvisioner{ProvisionerNameValue: "foo"}
 	if v := n.ProvisionerName(); v != "foo" {
 		t.Fatalf("bad: %#v", v)
 	}
@@ -85,11 +92,14 @@ func TestGraphNodeMissingProvisioner_ProvisionerName(t *testing.T) {
 
 const testTransformMissingProvisionerBasicStr = `
 aws_instance.web
-provisioner.foo
+  provisioner.shell
+provisioner.shell
 `
 
-const testTransformPruneProvisionerBasicStr = `
+const testTransformCloseProvisionerBasicStr = `
 aws_instance.web
-  provisioner.foo
-provisioner.foo
+  provisioner.shell
+provisioner.shell
+provisioner.shell (close)
+  aws_instance.web
 `

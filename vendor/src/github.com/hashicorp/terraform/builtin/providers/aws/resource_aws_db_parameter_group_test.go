@@ -2,11 +2,14 @@ package aws
 
 import (
 	"fmt"
+	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -14,22 +17,24 @@ import (
 func TestAccAWSDBParameterGroup_basic(t *testing.T) {
 	var v rds.DBParameterGroup
 
+	groupName := fmt.Sprintf("parameter-group-test-terraform-%d", acctest.RandInt())
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckAWSDBParameterGroupDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAWSDBParameterGroupConfig,
+				Config: testAccAWSDBParameterGroupConfig(groupName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSDBParameterGroupExists("aws_db_parameter_group.bar", &v),
-					testAccCheckAWSDBParameterGroupAttributes(&v),
+					testAccCheckAWSDBParameterGroupAttributes(&v, groupName),
 					resource.TestCheckResourceAttr(
-						"aws_db_parameter_group.bar", "name", "parameter-group-test-terraform"),
+						"aws_db_parameter_group.bar", "name", groupName),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "family", "mysql5.6"),
 					resource.TestCheckResourceAttr(
-						"aws_db_parameter_group.bar", "description", "Test parameter group for terraform"),
+						"aws_db_parameter_group.bar", "description", "Managed by Terraform"),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "parameter.1708034931.name", "character_set_results"),
 					resource.TestCheckResourceAttr(
@@ -42,15 +47,17 @@ func TestAccAWSDBParameterGroup_basic(t *testing.T) {
 						"aws_db_parameter_group.bar", "parameter.2478663599.name", "character_set_client"),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "parameter.2478663599.value", "utf8"),
+					resource.TestCheckResourceAttr(
+						"aws_db_parameter_group.bar", "tags.#", "1"),
 				),
 			},
 			resource.TestStep{
-				Config: testAccAWSDBParameterGroupAddParametersConfig,
+				Config: testAccAWSDBParameterGroupAddParametersConfig(groupName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSDBParameterGroupExists("aws_db_parameter_group.bar", &v),
-					testAccCheckAWSDBParameterGroupAttributes(&v),
+					testAccCheckAWSDBParameterGroupAttributes(&v, groupName),
 					resource.TestCheckResourceAttr(
-						"aws_db_parameter_group.bar", "name", "parameter-group-test-terraform"),
+						"aws_db_parameter_group.bar", "name", groupName),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "family", "mysql5.6"),
 					resource.TestCheckResourceAttr(
@@ -75,35 +82,76 @@ func TestAccAWSDBParameterGroup_basic(t *testing.T) {
 						"aws_db_parameter_group.bar", "parameter.2478663599.name", "character_set_client"),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "parameter.2478663599.value", "utf8"),
+					resource.TestCheckResourceAttr(
+						"aws_db_parameter_group.bar", "tags.#", "2"),
 				),
 			},
 		},
 	})
 }
 
-func TestAccAWSDBParameterGroupOnly(t *testing.T) {
+func TestAccAWSDBParameterGroup_Only(t *testing.T) {
 	var v rds.DBParameterGroup
 
+	groupName := fmt.Sprintf("parameter-group-test-terraform-%d", acctest.RandInt())
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckAWSDBParameterGroupDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAWSDBParameterGroupOnlyConfig,
+				Config: testAccAWSDBParameterGroupOnlyConfig(groupName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSDBParameterGroupExists("aws_db_parameter_group.bar", &v),
-					testAccCheckAWSDBParameterGroupAttributes(&v),
+					testAccCheckAWSDBParameterGroupAttributes(&v, groupName),
 					resource.TestCheckResourceAttr(
-						"aws_db_parameter_group.bar", "name", "parameter-group-test-terraform"),
+						"aws_db_parameter_group.bar", "name", groupName),
 					resource.TestCheckResourceAttr(
 						"aws_db_parameter_group.bar", "family", "mysql5.6"),
-					resource.TestCheckResourceAttr(
-						"aws_db_parameter_group.bar", "description", "Test parameter group for terraform"),
 				),
 			},
 		},
 	})
+}
+
+func TestResourceAWSDBParameterGroupName_validation(t *testing.T) {
+	cases := []struct {
+		Value    string
+		ErrCount int
+	}{
+		{
+			Value:    "tEsting123",
+			ErrCount: 1,
+		},
+		{
+			Value:    "testing123!",
+			ErrCount: 1,
+		},
+		{
+			Value:    "1testing123",
+			ErrCount: 1,
+		},
+		{
+			Value:    "testing--123",
+			ErrCount: 1,
+		},
+		{
+			Value:    "testing123-",
+			ErrCount: 1,
+		},
+		{
+			Value:    randomString(256),
+			ErrCount: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		_, errors := validateDbParamGroupName(tc.Value, "aws_db_parameter_group_name")
+
+		if len(errors) != tc.ErrCount {
+			t.Fatalf("Expected the DB Parameter Group Name to trigger a validation error")
+		}
+	}
 }
 
 func testAccCheckAWSDBParameterGroupDestroy(s *terraform.State) error {
@@ -132,7 +180,7 @@ func testAccCheckAWSDBParameterGroupDestroy(s *terraform.State) error {
 		if !ok {
 			return err
 		}
-		if newerr.Code() != "InvalidDBParameterGroup.NotFound" {
+		if newerr.Code() != "DBParameterGroupNotFound" {
 			return err
 		}
 	}
@@ -140,19 +188,15 @@ func testAccCheckAWSDBParameterGroupDestroy(s *terraform.State) error {
 	return nil
 }
 
-func testAccCheckAWSDBParameterGroupAttributes(v *rds.DBParameterGroup) resource.TestCheckFunc {
+func testAccCheckAWSDBParameterGroupAttributes(v *rds.DBParameterGroup, name string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 
-		if *v.DBParameterGroupName != "parameter-group-test-terraform" {
-			return fmt.Errorf("bad name: %#v", v.DBParameterGroupName)
+		if *v.DBParameterGroupName != name {
+			return fmt.Errorf("Bad Parameter Group name, expected (%s), got (%s)", name, *v.DBParameterGroupName)
 		}
 
 		if *v.DBParameterGroupFamily != "mysql5.6" {
 			return fmt.Errorf("bad family: %#v", v.DBParameterGroupFamily)
-		}
-
-		if *v.Description != "Test parameter group for terraform" {
-			return fmt.Errorf("bad description: %#v", v.Description)
 		}
 
 		return nil
@@ -193,11 +237,21 @@ func testAccCheckAWSDBParameterGroupExists(n string, v *rds.DBParameterGroup) re
 	}
 }
 
-const testAccAWSDBParameterGroupConfig = `
+func randomString(strlen int) string {
+	rand.Seed(time.Now().UTC().UnixNano())
+	const chars = "abcdefghijklmnopqrstuvwxyz"
+	result := make([]byte, strlen)
+	for i := 0; i < strlen; i++ {
+		result[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(result)
+}
+
+func testAccAWSDBParameterGroupConfig(n string) string {
+	return fmt.Sprintf(`
 resource "aws_db_parameter_group" "bar" {
-	name = "parameter-group-test-terraform"
+	name = "%s"
 	family = "mysql5.6"
-	description = "Test parameter group for terraform"
 	parameter {
 	  name = "character_set_server"
 	  value = "utf8"
@@ -210,12 +264,16 @@ resource "aws_db_parameter_group" "bar" {
 	  name = "character_set_results"
 	  value = "utf8"
 	}
+	tags {
+		foo = "bar"
+	}
+}`, n)
 }
-`
 
-const testAccAWSDBParameterGroupAddParametersConfig = `
+func testAccAWSDBParameterGroupAddParametersConfig(n string) string {
+	return fmt.Sprintf(`
 resource "aws_db_parameter_group" "bar" {
-	name = "parameter-group-test-terraform"
+	name = "%s"
 	family = "mysql5.6"
 	description = "Test parameter group for terraform"
 	parameter {
@@ -238,13 +296,18 @@ resource "aws_db_parameter_group" "bar" {
 	  name = "collation_connection"
 	  value = "utf8_unicode_ci"
 	}
+	tags {
+		foo = "bar"
+		baz = "foo"
+	}
+}`, n)
 }
-`
 
-const testAccAWSDBParameterGroupOnlyConfig = `
+func testAccAWSDBParameterGroupOnlyConfig(n string) string {
+	return fmt.Sprintf(`
 resource "aws_db_parameter_group" "bar" {
-	name = "parameter-group-test-terraform"
+	name = "%s"
 	family = "mysql5.6"
 	description = "Test parameter group for terraform"
+}`, n)
 }
-`

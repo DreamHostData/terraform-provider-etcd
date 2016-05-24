@@ -5,59 +5,57 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"runtime"
+	"strings"
 
-	// TODO(dcunnin): Use version code from version.go
-	// "github.com/hashicorp/terraform"
+	"github.com/hashicorp/terraform/helper/pathorcontents"
+	"github.com/hashicorp/terraform/terraform"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
 	"google.golang.org/api/compute/v1"
+	"google.golang.org/api/container/v1"
 	"google.golang.org/api/dns/v1"
+	"google.golang.org/api/pubsub/v1"
+	"google.golang.org/api/sqladmin/v1beta4"
 	"google.golang.org/api/storage/v1"
 )
 
 // Config is the configuration structure used to instantiate the Google
 // provider.
 type Config struct {
-	AccountFile string
+	Credentials string
 	Project     string
 	Region      string
 
-	clientCompute *compute.Service
-	clientDns     *dns.Service
-	clientStorage *storage.Service
+	clientCompute   *compute.Service
+	clientContainer *container.Service
+	clientDns       *dns.Service
+	clientStorage   *storage.Service
+	clientSqlAdmin  *sqladmin.Service
+	clientPubsub    *pubsub.Service
 }
 
 func (c *Config) loadAndValidate() error {
 	var account accountFile
-
-	// TODO: validation that it isn't blank
-	if c.AccountFile == "" {
-		c.AccountFile = os.Getenv("GOOGLE_ACCOUNT_FILE")
-	}
-	if c.Project == "" {
-		c.Project = os.Getenv("GOOGLE_PROJECT")
-	}
-	if c.Region == "" {
-		c.Region = os.Getenv("GOOGLE_REGION")
+	clientScopes := []string{
+		"https://www.googleapis.com/auth/compute",
+		"https://www.googleapis.com/auth/cloud-platform",
+		"https://www.googleapis.com/auth/ndev.clouddns.readwrite",
+		"https://www.googleapis.com/auth/devstorage.full_control",
 	}
 
 	var client *http.Client
 
-	if c.AccountFile != "" {
-		if err := loadJSON(&account, c.AccountFile); err != nil {
-			return fmt.Errorf(
-				"Error loading account file '%s': %s",
-				c.AccountFile,
-				err)
+	if c.Credentials != "" {
+		contents, _, err := pathorcontents.Read(c.Credentials)
+		if err != nil {
+			return fmt.Errorf("Error loading credentials: %s", err)
 		}
 
-		clientScopes := []string{
-			"https://www.googleapis.com/auth/compute",
-			"https://www.googleapis.com/auth/ndev.clouddns.readwrite",
-			"https://www.googleapis.com/auth/devstorage.full_control",
+		// Assume account_file is a JSON string
+		if err := parseJSON(&account, contents); err != nil {
+			return fmt.Errorf("Error parsing credentials '%s': %s", contents, err)
 		}
 
 		// Get the token for use in our requests
@@ -79,25 +77,19 @@ func (c *Config) loadAndValidate() error {
 		client = conf.Client(oauth2.NoContext)
 
 	} else {
-		log.Printf("[INFO] Requesting Google token via GCE Service Role...")
-		client = &http.Client{
-			Transport: &oauth2.Transport{
-				// Fetch from Google Compute Engine's metadata server to retrieve
-				// an access token for the provided account.
-				// If no account is specified, "default" is used.
-				Source: google.ComputeTokenSource(""),
-			},
+		log.Printf("[INFO] Authenticating using DefaultClient")
+		err := error(nil)
+		client, err = google.DefaultClient(oauth2.NoContext, clientScopes...)
+		if err != nil {
+			return err
 		}
-
 	}
 
-	// Build UserAgent
-	versionString := "0.0.0"
-	// TODO(dcunnin): Use Terraform's version code from version.go
-	// versionString := main.Version
-	// if main.VersionPrerelease != "" {
-	// 	versionString = fmt.Sprintf("%s-%s", versionString, main.VersionPrerelease)
-	// }
+	versionString := terraform.Version
+	prerelease := terraform.VersionPrerelease
+	if len(prerelease) > 0 {
+		versionString = fmt.Sprintf("%s-%s", versionString, prerelease)
+	}
 	userAgent := fmt.Sprintf(
 		"(%s %s) Terraform/%s", runtime.GOOS, runtime.GOARCH, versionString)
 
@@ -109,6 +101,13 @@ func (c *Config) loadAndValidate() error {
 		return err
 	}
 	c.clientCompute.UserAgent = userAgent
+
+	log.Printf("[INFO] Instantiating GKE client...")
+	c.clientContainer, err = container.New(client)
+	if err != nil {
+		return err
+	}
+	c.clientContainer.UserAgent = userAgent
 
 	log.Printf("[INFO] Instantiating Google Cloud DNS client...")
 	c.clientDns, err = dns.New(client)
@@ -124,6 +123,20 @@ func (c *Config) loadAndValidate() error {
 	}
 	c.clientStorage.UserAgent = userAgent
 
+	log.Printf("[INFO] Instantiating Google SqlAdmin Client...")
+	c.clientSqlAdmin, err = sqladmin.New(client)
+	if err != nil {
+		return err
+	}
+	c.clientSqlAdmin.UserAgent = userAgent
+
+	log.Printf("[INFO] Instatiating Google Pubsub Client...")
+	c.clientPubsub, err = pubsub.New(client)
+	if err != nil {
+		return err
+	}
+	c.clientPubsub.UserAgent = userAgent
+
 	return nil
 }
 
@@ -135,13 +148,9 @@ type accountFile struct {
 	ClientId     string `json:"client_id"`
 }
 
-func loadJSON(result interface{}, path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+func parseJSON(result interface{}, contents string) error {
+	r := strings.NewReader(contents)
+	dec := json.NewDecoder(r)
 
-	dec := json.NewDecoder(f)
 	return dec.Decode(result)
 }

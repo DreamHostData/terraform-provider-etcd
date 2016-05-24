@@ -7,9 +7,9 @@ import (
 )
 
 type DnsChangeWaiter struct {
-	Service *dns.Service
-	Change *dns.Change
-	Project string
+	Service     *dns.Service
+	Change      *dns.Change
+	Project     string
 	ManagedZone string
 }
 
@@ -32,7 +32,7 @@ func (w *DnsChangeWaiter) RefreshFunc() resource.StateRefreshFunc {
 func (w *DnsChangeWaiter) Conf() *resource.StateChangeConf {
 	return &resource.StateChangeConf{
 		Pending: []string{"pending"},
-		Target:  "done",
+		Target:  []string{"done"},
 		Refresh: w.RefreshFunc(),
 	}
 }

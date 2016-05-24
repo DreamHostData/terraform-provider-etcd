@@ -33,7 +33,14 @@ func TestAccAWSInstance_basic(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
+		PreCheck: func() { testAccPreCheck(t) },
+
+		// We ignore security groups because even with EC2 classic
+		// we'll import as VPC security groups, which is fine. We verify
+		// VPC security group import in other tests
+		IDRefreshName:   "aws_instance.foo",
+		IDRefreshIgnore: []string{"user_data", "security_groups", "vpc_security_group_ids"},
+
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
@@ -46,7 +53,7 @@ func TestAccAWSInstance_basic(t *testing.T) {
 					var err error
 					vol, err = conn.CreateVolume(&ec2.CreateVolumeInput{
 						AvailabilityZone: aws.String("us-west-2a"),
-						Size:             aws.Long(int64(5)),
+						Size:             aws.Int64(int64(5)),
 					})
 					return err
 				},
@@ -90,7 +97,7 @@ func TestAccAWSInstance_basic(t *testing.T) {
 				Config: testAccInstanceConfig,
 				Check: func(*terraform.State) error {
 					conn := testAccProvider.Meta().(*AWSClient).ec2conn
-					_, err := conn.DeleteVolume(&ec2.DeleteVolumeInput{VolumeID: vol.VolumeID})
+					_, err := conn.DeleteVolume(&ec2.DeleteVolumeInput{VolumeId: vol.VolumeId})
 					return err
 				},
 			},
@@ -112,22 +119,22 @@ func TestAccAWSInstance_blockDevices(t *testing.T) {
 
 			// Check if the root block device exists.
 			if _, ok := blockDevices["/dev/sda1"]; !ok {
-				fmt.Errorf("block device doesn't exist: /dev/sda1")
+				return fmt.Errorf("block device doesn't exist: /dev/sda1")
 			}
 
 			// Check if the secondary block device exists.
 			if _, ok := blockDevices["/dev/sdb"]; !ok {
-				fmt.Errorf("block device doesn't exist: /dev/sdb")
+				return fmt.Errorf("block device doesn't exist: /dev/sdb")
 			}
 
 			// Check if the third block device exists.
 			if _, ok := blockDevices["/dev/sdc"]; !ok {
-				fmt.Errorf("block device doesn't exist: /dev/sdc")
+				return fmt.Errorf("block device doesn't exist: /dev/sdc")
 			}
 
 			// Check if the encrypted block device exists
 			if _, ok := blockDevices["/dev/sdd"]; !ok {
-				fmt.Errorf("block device doesn't exist: /dev/sdd")
+				return fmt.Errorf("block device doesn't exist: /dev/sdd")
 			}
 
 			return nil
@@ -135,7 +142,10 @@ func TestAccAWSInstance_blockDevices(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo",
+		IDRefreshIgnore: []string{
+			"ephemeral_block_device", "user_data", "security_groups", "vpc_security_groups"},
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
@@ -190,6 +200,9 @@ func TestAccAWSInstance_sourceDestCheck(t *testing.T) {
 
 	testCheck := func(enabled bool) resource.TestCheckFunc {
 		return func(*terraform.State) error {
+			if v.SourceDestCheck == nil {
+				return fmt.Errorf("bad source_dest_check: got nil")
+			}
 			if *v.SourceDestCheck != enabled {
 				return fmt.Errorf("bad source_dest_check: %#v", *v.SourceDestCheck)
 			}
@@ -199,9 +212,10 @@ func TestAccAWSInstance_sourceDestCheck(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceConfigSourceDestDisable,
@@ -237,13 +251,13 @@ func TestAccAWSInstance_disableApiTermination(t *testing.T) {
 		return func(*terraform.State) error {
 			conn := testAccProvider.Meta().(*AWSClient).ec2conn
 			r, err := conn.DescribeInstanceAttribute(&ec2.DescribeInstanceAttributeInput{
-				InstanceID: v.InstanceID,
+				InstanceId: v.InstanceId,
 				Attribute:  aws.String("disableApiTermination"),
 			})
 			if err != nil {
 				return err
 			}
-			got := *r.DisableAPITermination.Value
+			got := *r.DisableApiTermination.Value
 			if got != expected {
 				return fmt.Errorf("expected: %t, got: %t", expected, got)
 			}
@@ -252,9 +266,10 @@ func TestAccAWSInstance_disableApiTermination(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceConfigDisableAPITermination(true),
@@ -279,15 +294,21 @@ func TestAccAWSInstance_vpc(t *testing.T) {
 	var v ec2.Instance
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:        func() { testAccPreCheck(t) },
+		IDRefreshName:   "aws_instance.foo",
+		IDRefreshIgnore: []string{"associate_public_ip_address", "user_data"},
+		Providers:       testAccProviders,
+		CheckDestroy:    testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceConfigVPC,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckInstanceExists(
 						"aws_instance.foo", &v),
+					resource.TestCheckResourceAttr(
+						"aws_instance.foo",
+						"user_data",
+						"2fad308761514d9d73c3c7fdc877607e06cf950d"),
 				),
 			},
 		},
@@ -330,9 +351,11 @@ func TestAccAWSInstance_NetworkInstanceSecurityGroups(t *testing.T) {
 	var v ec2.Instance
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:        func() { testAccPreCheck(t) },
+		IDRefreshName:   "aws_instance.foo_instance",
+		IDRefreshIgnore: []string{"associate_public_ip_address"},
+		Providers:       testAccProviders,
+		CheckDestroy:    testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceNetworkInstanceSecurityGroups,
@@ -349,9 +372,10 @@ func TestAccAWSInstance_NetworkInstanceVPCSecurityGroupIDs(t *testing.T) {
 	var v ec2.Instance
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo_instance",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceNetworkInstanceVPCSecurityGroupIDs,
@@ -403,8 +427,8 @@ func TestAccAWSInstance_privateIP(t *testing.T) {
 
 	testCheckPrivateIP := func() resource.TestCheckFunc {
 		return func(*terraform.State) error {
-			if *v.PrivateIPAddress != "10.1.1.42" {
-				return fmt.Errorf("bad private IP: %s", *v.PrivateIPAddress)
+			if *v.PrivateIpAddress != "10.1.1.42" {
+				return fmt.Errorf("bad private IP: %s", *v.PrivateIpAddress)
 			}
 
 			return nil
@@ -412,9 +436,10 @@ func TestAccAWSInstance_privateIP(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceConfigPrivateIP,
@@ -432,8 +457,8 @@ func TestAccAWSInstance_associatePublicIPAndPrivateIP(t *testing.T) {
 
 	testCheckPrivateIP := func() resource.TestCheckFunc {
 		return func(*terraform.State) error {
-			if *v.PrivateIPAddress != "10.1.1.42" {
-				return fmt.Errorf("bad private IP: %s", *v.PrivateIPAddress)
+			if *v.PrivateIpAddress != "10.1.1.42" {
+				return fmt.Errorf("bad private IP: %s", *v.PrivateIpAddress)
 			}
 
 			return nil
@@ -441,15 +466,109 @@ func TestAccAWSInstance_associatePublicIPAndPrivateIP(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInstanceDestroy,
+		PreCheck:        func() { testAccPreCheck(t) },
+		IDRefreshName:   "aws_instance.foo",
+		IDRefreshIgnore: []string{"associate_public_ip_address"},
+		Providers:       testAccProviders,
+		CheckDestroy:    testAccCheckInstanceDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInstanceConfigAssociatePublicIPAndPrivateIP,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckInstanceExists("aws_instance.foo", &v),
 					testCheckPrivateIP(),
+				),
+			},
+		},
+	})
+}
+
+// Guard against regression with KeyPairs
+// https://github.com/hashicorp/terraform/issues/2302
+func TestAccAWSInstance_keyPairCheck(t *testing.T) {
+	var v ec2.Instance
+
+	testCheckKeyPair := func(keyName string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			if v.KeyName == nil {
+				return fmt.Errorf("No Key Pair found, expected(%s)", keyName)
+			}
+			if v.KeyName != nil && *v.KeyName != keyName {
+				return fmt.Errorf("Bad key name, expected (%s), got (%s)", keyName, *v.KeyName)
+			}
+
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:        func() { testAccPreCheck(t) },
+		IDRefreshName:   "aws_instance.foo",
+		IDRefreshIgnore: []string{"source_dest_check"},
+		Providers:       testAccProviders,
+		CheckDestroy:    testAccCheckInstanceDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccInstanceConfigKeyPair,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckInstanceExists("aws_instance.foo", &v),
+					testCheckKeyPair("tmp-key"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSInstance_rootBlockDeviceMismatch(t *testing.T) {
+	var v ec2.Instance
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckInstanceDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccInstanceConfigRootBlockDeviceMismatch,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckInstanceExists("aws_instance.foo", &v),
+					resource.TestCheckResourceAttr(
+						"aws_instance.foo", "root_block_device.0.volume_size", "13"),
+				),
+			},
+		},
+	})
+}
+
+// This test reproduces the bug here:
+//   https://github.com/hashicorp/terraform/issues/1752
+//
+// I wish there were a way to exercise resources built with helper.Schema in a
+// unit context, in which case this test could be moved there, but for now this
+// will cover the bugfix.
+//
+// The following triggers "diffs didn't match during apply" without the fix in to
+// set NewRemoved on the .# field when it changes to 0.
+func TestAccAWSInstance_forceNewAndTagsDrift(t *testing.T) {
+	var v ec2.Instance
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_instance.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInstanceDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccInstanceConfigForceNewAndTagsDrift,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckInstanceExists("aws_instance.foo", &v),
+					driftTags(&v),
+				),
+				ExpectNonEmptyPlan: true,
+			},
+			resource.TestStep{
+				Config: testAccInstanceConfigForceNewAndTagsDrift_Update,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckInstanceExists("aws_instance.foo", &v),
 				),
 			},
 		},
@@ -483,26 +602,25 @@ func testAccCheckInstanceDestroyWithProvider(s *terraform.State, provider *schem
 		}
 
 		// Try to find the resource
-		var err error
 		resp, err := conn.DescribeInstances(&ec2.DescribeInstancesInput{
-			InstanceIDs: []*string{aws.String(rs.Primary.ID)},
+			InstanceIds: []*string{aws.String(rs.Primary.ID)},
 		})
 		if err == nil {
-			if len(resp.Reservations) > 0 {
-				return fmt.Errorf("still exist.")
+			for _, r := range resp.Reservations {
+				for _, i := range r.Instances {
+					if i.State != nil && *i.State.Name != "terminated" {
+						return fmt.Errorf("Found unterminated instance: %s", i)
+					}
+				}
 			}
-
-			return nil
 		}
 
 		// Verify the error is what we want
-		ec2err, ok := err.(awserr.Error)
-		if !ok {
-			return err
+		if ae, ok := err.(awserr.Error); ok && ae.Code() == "InvalidInstanceID.NotFound" {
+			continue
 		}
-		if ec2err.Code() != "InvalidInstanceID.NotFound" {
-			return err
-		}
+
+		return err
 	}
 
 	return nil
@@ -524,9 +642,14 @@ func testAccCheckInstanceExistsWithProviders(n string, i *ec2.Instance, provider
 			return fmt.Errorf("No ID is set")
 		}
 		for _, provider := range *providers {
+			// Ignore if Meta is empty, this can happen for validation providers
+			if provider.Meta() == nil {
+				continue
+			}
+
 			conn := provider.Meta().(*AWSClient).ec2conn
 			resp, err := conn.DescribeInstances(&ec2.DescribeInstancesInput{
-				InstanceIDs: []*string{aws.String(rs.Primary.ID)},
+				InstanceIds: []*string{aws.String(rs.Primary.ID)},
 			})
 			if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidInstanceID.NotFound" {
 				continue
@@ -558,6 +681,22 @@ func TestInstanceTenancySchema(t *testing.T) {
 			"Got:\n\n%#v\n\nExpected:\n\n%#v\n",
 			actualSchema,
 			expectedSchema)
+	}
+}
+
+func driftTags(instance *ec2.Instance) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		conn := testAccProvider.Meta().(*AWSClient).ec2conn
+		_, err := conn.CreateTags(&ec2.CreateTagsInput{
+			Resources: []*string{instance.InstanceId},
+			Tags: []*ec2.Tag{
+				&ec2.Tag{
+					Key:   aws.String("Drift"),
+					Value: aws.String("Happens"),
+				},
+			},
+		})
+		return err
 	}
 }
 
@@ -713,6 +852,8 @@ resource "aws_instance" "foo" {
 	subnet_id = "${aws_subnet.foo.id}"
 	associate_public_ip_address = true
 	tenancy = "dedicated"
+	# pre-encoded base64 data
+	user_data = "3dc39dda39be1205215e776bad998da361a5955d"
 }
 `
 
@@ -832,7 +973,7 @@ resource "aws_subnet" "foo" {
 resource "aws_instance" "foo_instance" {
   ami = "ami-21f78e11"
   instance_type = "t1.micro"
-  security_groups = ["${aws_security_group.tf_test_foo.id}"]
+  vpc_security_group_ids = ["${aws_security_group.tf_test_foo.id}"]
   subnet_id = "${aws_subnet.foo.id}"
   associate_public_ip_address = true
 	depends_on = ["aws_internet_gateway.gw"]
@@ -887,5 +1028,77 @@ resource "aws_eip" "foo_eip" {
   instance = "${aws_instance.foo_instance.id}"
   vpc = true
 	depends_on = ["aws_internet_gateway.gw"]
+}
+`
+
+const testAccInstanceConfigKeyPair = `
+provider "aws" {
+	region = "us-east-1"
+}
+
+resource "aws_key_pair" "debugging" {
+	key_name = "tmp-key"
+	public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD3F6tyPEFEzV0LX3X8BsXdMsQz1x2cEikKDEY0aIj41qgxMCP/iteneqXSIFZBp5vizPvaoIR3Um9xK7PGoW8giupGn+EPuxIA4cDM4vzOqOkiMPhz5XK0whEjkVzTo4+S0puvDZuwIsdiW9mxhJc7tgBNL0cYlWSYVkz4G/fslNfRPW5mYAM49f4fhtxPb5ok4Q2Lg9dPKVHO/Bgeu5woMc7RY0p1ej6D4CKFE6lymSDJpW0YHX/wqE9+cfEauh7xZcG0q9t2ta6F6fmX0agvpFyZo8aFbXeUBr7osSCJNgvavWbM/06niWrOvYX2xwWdhXmXSrbX8ZbabVohBK41 phodgson@thoughtworks.com"
+}
+
+resource "aws_instance" "foo" {
+  ami = "ami-408c7f28"
+  instance_type = "t1.micro"
+  key_name = "${aws_key_pair.debugging.key_name}"
+}
+`
+
+const testAccInstanceConfigRootBlockDeviceMismatch = `
+resource "aws_vpc" "foo" {
+	cidr_block = "10.1.0.0/16"
+}
+
+resource "aws_subnet" "foo" {
+	cidr_block = "10.1.1.0/24"
+	vpc_id = "${aws_vpc.foo.id}"
+}
+
+resource "aws_instance" "foo" {
+	// This is an AMI with RootDeviceName: "/dev/sda1"; actual root: "/dev/sda"
+	ami = "ami-ef5b69df"
+	instance_type = "t1.micro"
+	subnet_id = "${aws_subnet.foo.id}"
+	root_block_device {
+		volume_size = 13
+	}
+}
+`
+
+const testAccInstanceConfigForceNewAndTagsDrift = `
+resource "aws_vpc" "foo" {
+	cidr_block = "10.1.0.0/16"
+}
+
+resource "aws_subnet" "foo" {
+	cidr_block = "10.1.1.0/24"
+	vpc_id = "${aws_vpc.foo.id}"
+}
+
+resource "aws_instance" "foo" {
+	ami = "ami-22b9a343"
+	instance_type = "t2.nano"
+	subnet_id = "${aws_subnet.foo.id}"
+}
+`
+
+const testAccInstanceConfigForceNewAndTagsDrift_Update = `
+resource "aws_vpc" "foo" {
+	cidr_block = "10.1.0.0/16"
+}
+
+resource "aws_subnet" "foo" {
+	cidr_block = "10.1.1.0/24"
+	vpc_id = "${aws_vpc.foo.id}"
+}
+
+resource "aws_instance" "foo" {
+	ami = "ami-22b9a343"
+	instance_type = "t2.micro"
+	subnet_id = "${aws_subnet.foo.id}"
 }
 `

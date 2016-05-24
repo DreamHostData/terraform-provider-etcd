@@ -16,19 +16,41 @@ func resourceCloudStackIPAddress() *schema.Resource {
 		Delete: resourceCloudStackIPAddressDelete,
 
 		Schema: map[string]*schema.Schema{
-			"network": &schema.Schema{
+			"network_id": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
+
+			"network": &schema.Schema{
+				Type:       schema.TypeString,
+				Optional:   true,
+				ForceNew:   true,
+				Deprecated: "Please use the `network_id` field instead",
+			},
+
+			"vpc_id": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
 				ForceNew: true,
 			},
 
 			"vpc": &schema.Schema{
+				Type:       schema.TypeString,
+				Optional:   true,
+				ForceNew:   true,
+				Deprecated: "Please use the `vpc_id` field instead",
+			},
+
+			"project": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
 
-			"ipaddress": &schema.Schema{
+			"ip_address": &schema.Schema{
 				Type:     schema.TypeString,
 				Computed: true,
 			},
@@ -46,9 +68,18 @@ func resourceCloudStackIPAddressCreate(d *schema.ResourceData, meta interface{})
 	// Create a new parameter struct
 	p := cs.Address.NewAssociateIpAddressParams()
 
-	if network, ok := d.GetOk("network"); ok {
-		// Retrieve the network UUID
-		networkid, e := retrieveUUID(cs, "network", network.(string))
+	network, ok := d.GetOk("network_id")
+	if !ok {
+		network, ok = d.GetOk("network")
+	}
+	if ok {
+		// Retrieve the network ID
+		networkid, e := retrieveID(
+			cs,
+			"network",
+			network.(string),
+			cloudstack.WithProject(d.Get("project").(string)),
+		)
 		if e != nil {
 			return e.Error()
 		}
@@ -57,15 +88,29 @@ func resourceCloudStackIPAddressCreate(d *schema.ResourceData, meta interface{})
 		p.SetNetworkid(networkid)
 	}
 
-	if vpc, ok := d.GetOk("vpc"); ok {
-		// Retrieve the vpc UUID
-		vpcid, e := retrieveUUID(cs, "vpc", vpc.(string))
+	vpc, ok := d.GetOk("vpc_id")
+	if !ok {
+		vpc, ok = d.GetOk("vpc")
+	}
+	if ok {
+		// Retrieve the vpc ID
+		vpcid, e := retrieveID(
+			cs,
+			"vpc",
+			vpc.(string),
+			cloudstack.WithProject(d.Get("project").(string)),
+		)
 		if e != nil {
 			return e.Error()
 		}
 
 		// Set the vpcid
 		p.SetVpcid(vpcid)
+	}
+
+	// If there is a project supplied, we retrieve and set the project id
+	if err := setProjectid(p, cs, d); err != nil {
+		return err
 	}
 
 	// Associate a new IP address
@@ -82,8 +127,11 @@ func resourceCloudStackIPAddressCreate(d *schema.ResourceData, meta interface{})
 func resourceCloudStackIPAddressRead(d *schema.ResourceData, meta interface{}) error {
 	cs := meta.(*cloudstack.CloudStackClient)
 
-	// Get the network ACL list details
-	f, count, err := cs.Address.GetPublicIpAddressByID(d.Id())
+	// Get the IP address details
+	ip, count, err := cs.Address.GetPublicIpAddressByID(
+		d.Id(),
+		cloudstack.WithProject(d.Get("project").(string)),
+	)
 	if err != nil {
 		if count == 0 {
 			log.Printf(
@@ -96,27 +144,21 @@ func resourceCloudStackIPAddressRead(d *schema.ResourceData, meta interface{}) e
 	}
 
 	// Updated the IP address
-	d.Set("ipaddress", f.Ipaddress)
+	d.Set("ip_address", ip.Ipaddress)
 
-	if _, ok := d.GetOk("network"); ok {
-		// Get the network details
-		n, _, err := cs.Network.GetNetworkByID(f.Associatednetworkid)
-		if err != nil {
-			return err
-		}
-
-		d.Set("network", n.Name)
+	_, networkID := d.GetOk("network_id")
+	_, network := d.GetOk("network")
+	if networkID || network {
+		d.Set("network_id", ip.Associatednetworkid)
 	}
 
-	if _, ok := d.GetOk("vpc"); ok {
-		// Get the VPC details
-		v, _, err := cs.VPC.GetVPCByID(f.Vpcid)
-		if err != nil {
-			return err
-		}
-
-		d.Set("vpc", v.Name)
+	_, vpcID := d.GetOk("vpc_id")
+	_, vpc := d.GetOk("vpc")
+	if vpcID || vpc {
+		d.Set("vpc_id", ip.Vpcid)
 	}
+
+	setValueOrID(d, "project", ip.Project, ip.Projectid)
 
 	return nil
 }
@@ -129,7 +171,7 @@ func resourceCloudStackIPAddressDelete(d *schema.ResourceData, meta interface{})
 
 	// Disassociate the IP address
 	if _, err := cs.Address.DisassociateIpAddress(p); err != nil {
-		// This is a very poor way to be told the UUID does no longer exist :(
+		// This is a very poor way to be told the ID does no longer exist :(
 		if strings.Contains(err.Error(), fmt.Sprintf(
 			"Invalid parameter id value=%s due to incorrect long value format, "+
 				"or entity does not exist", d.Id())) {
@@ -143,12 +185,14 @@ func resourceCloudStackIPAddressDelete(d *schema.ResourceData, meta interface{})
 }
 
 func verifyIPAddressParams(d *schema.ResourceData) error {
+	_, networkID := d.GetOk("network_id")
 	_, network := d.GetOk("network")
+	_, vpcID := d.GetOk("vpc_id")
 	_, vpc := d.GetOk("vpc")
 
-	if (network && vpc) || (!network && !vpc) {
+	if (networkID || network) && (vpcID || vpc) || (!networkID && !network) && (!vpcID && !vpc) {
 		return fmt.Errorf(
-			"You must supply a value for either (so not both) the 'network' or 'vpc' parameter")
+			"You must supply a value for either (so not both) the 'network_id' or 'vpc_id' parameter")
 	}
 
 	return nil

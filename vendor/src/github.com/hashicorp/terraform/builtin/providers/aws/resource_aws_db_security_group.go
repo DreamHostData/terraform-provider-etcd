@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform/helper/hashcode"
-	"github.com/hashicorp/terraform/helper/multierror"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
@@ -19,9 +21,15 @@ func resourceAwsDbSecurityGroup() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceAwsDbSecurityGroupCreate,
 		Read:   resourceAwsDbSecurityGroupRead,
+		Update: resourceAwsDbSecurityGroupUpdate,
 		Delete: resourceAwsDbSecurityGroupDelete,
 
 		Schema: map[string]*schema.Schema{
+			"arn": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
@@ -30,8 +38,9 @@ func resourceAwsDbSecurityGroup() *schema.Resource {
 
 			"description": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 				ForceNew: true,
+				Default:  "Managed by Terraform",
 			},
 
 			"ingress": &schema.Schema{
@@ -66,12 +75,15 @@ func resourceAwsDbSecurityGroup() *schema.Resource {
 				},
 				Set: resourceAwsDbSecurityGroupIngressHash,
 			},
+
+			"tags": tagsSchema(),
 		},
 	}
 }
 
 func resourceAwsDbSecurityGroupCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).rdsconn
+	tags := tagsFromMapRDS(d.Get("tags").(map[string]interface{}))
 
 	var err error
 	var errs []error
@@ -79,6 +91,7 @@ func resourceAwsDbSecurityGroupCreate(d *schema.ResourceData, meta interface{}) 
 	opts := rds.CreateDBSecurityGroupInput{
 		DBSecurityGroupName:        aws.String(d.Get("name").(string)),
 		DBSecurityGroupDescription: aws.String(d.Get("description").(string)),
+		Tags: tags,
 	}
 
 	log.Printf("[DEBUG] DB Security Group create configuration: %#v", opts)
@@ -113,7 +126,7 @@ func resourceAwsDbSecurityGroupCreate(d *schema.ResourceData, meta interface{}) 
 
 	stateConf := &resource.StateChangeConf{
 		Pending: []string{"authorizing"},
-		Target:  "authorized",
+		Target:  []string{"authorized"},
 		Refresh: resourceAwsDbSecurityGroupStateRefreshFunc(d, meta),
 		Timeout: 10 * time.Minute,
 	}
@@ -149,15 +162,56 @@ func resourceAwsDbSecurityGroupRead(d *schema.ResourceData, meta interface{}) er
 	for _, g := range sg.EC2SecurityGroups {
 		rule := map[string]interface{}{
 			"security_group_name":     *g.EC2SecurityGroupName,
-			"security_group_id":       *g.EC2SecurityGroupID,
-			"security_group_owner_id": *g.EC2SecurityGroupOwnerID,
+			"security_group_id":       *g.EC2SecurityGroupId,
+			"security_group_owner_id": *g.EC2SecurityGroupOwnerId,
 		}
 		rules.Add(rule)
 	}
 
 	d.Set("ingress", rules)
 
+	conn := meta.(*AWSClient).rdsconn
+	arn, err := buildRDSSecurityGroupARN(d, meta)
+	if err != nil {
+		name := "<empty>"
+		if sg.DBSecurityGroupName != nil && *sg.DBSecurityGroupName != "" {
+			name = *sg.DBSecurityGroupName
+		}
+		log.Printf("[DEBUG] Error building ARN for DB Security Group, not setting Tags for DB Security Group %s", name)
+	} else {
+		d.Set("arn", arn)
+		resp, err := conn.ListTagsForResource(&rds.ListTagsForResourceInput{
+			ResourceName: aws.String(arn),
+		})
+
+		if err != nil {
+			log.Printf("[DEBUG] Error retrieving tags for ARN: %s", arn)
+		}
+
+		var dt []*rds.Tag
+		if len(resp.TagList) > 0 {
+			dt = resp.TagList
+		}
+		d.Set("tags", tagsToMapRDS(dt))
+	}
+
 	return nil
+}
+
+func resourceAwsDbSecurityGroupUpdate(d *schema.ResourceData, meta interface{}) error {
+	conn := meta.(*AWSClient).rdsconn
+
+	d.Partial(true)
+	if arn, err := buildRDSSecurityGroupARN(d, meta); err == nil {
+		if err := setTagsRDS(conn, d, arn); err != nil {
+			return err
+		} else {
+			d.SetPartial("tags")
+		}
+	}
+	d.Partial(false)
+
+	return resourceAwsDbSecurityGroupRead(d, meta)
 }
 
 func resourceAwsDbSecurityGroupDelete(d *schema.ResourceData, meta interface{}) error {
@@ -221,11 +275,11 @@ func resourceAwsDbSecurityGroupAuthorizeRule(ingress interface{}, dbSecurityGrou
 	}
 
 	if attr, ok := ing["security_group_id"]; ok && attr != "" {
-		opts.EC2SecurityGroupID = aws.String(attr.(string))
+		opts.EC2SecurityGroupId = aws.String(attr.(string))
 	}
 
 	if attr, ok := ing["security_group_owner_id"]; ok && attr != "" {
-		opts.EC2SecurityGroupOwnerID = aws.String(attr.(string))
+		opts.EC2SecurityGroupOwnerId = aws.String(attr.(string))
 	}
 
 	log.Printf("[DEBUG] Authorize ingress rule configuration: %#v", opts)
@@ -289,4 +343,18 @@ func resourceAwsDbSecurityGroupStateRefreshFunc(
 
 		return v, "authorized", nil
 	}
+}
+
+func buildRDSSecurityGroupARN(d *schema.ResourceData, meta interface{}) (string, error) {
+	iamconn := meta.(*AWSClient).iamconn
+	region := meta.(*AWSClient).region
+	// An zero value GetUserInput{} defers to the currently logged in user
+	resp, err := iamconn.GetUser(&iam.GetUserInput{})
+	if err != nil {
+		return "", err
+	}
+	userARN := *resp.User.Arn
+	accountID := strings.Split(userARN, ":")[4]
+	arn := fmt.Sprintf("arn:aws:rds:%s:%s:secgrp:%s", region, accountID, d.Id())
+	return arn, nil
 }

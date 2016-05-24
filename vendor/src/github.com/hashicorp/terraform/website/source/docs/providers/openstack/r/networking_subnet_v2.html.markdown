@@ -21,7 +21,6 @@ resource "openstack_networking_network_v2" "network_1" {
 resource "openstack_networking_subnet_v2" "subnet_1" {
   network_id = "${openstack_networking_network_v2.network_1.id}"
   cidr = "192.168.199.0/24"
-  ip_version = 4
 }
 ```
 
@@ -40,7 +39,7 @@ The following arguments are supported:
 * `cidr` - (Required) CIDR representing IP range for this subnet, based on IP
     version. Changing this creates a new subnet.
 
-* `ip_version` - (Required) IP version, either 4 or 6. Changing this creates a
+* `ip_version` - (Optional) IP version, either 4 (default) or 6. Changing this creates a
     new subnet.
 
 * `name` - (Optional) The name of the subnet. Changing this updates the name of
@@ -54,11 +53,16 @@ The following arguments are supported:
     documented below. Changing this creates a new subnet.
 
 * `gateway_ip` - (Optional)  Default gateway used by devices in this subnet.
-    Changing this updates the gateway IP of the existing subnet.
+    Leaving this blank and not setting `no_gateway` will cause a default
+    gateway of `.1` to be used. Changing this updates the gateway IP of the
+    existing subnet.
+
+* `no_gateway` - (Optional) Do not set a gateway IP on this subnet. Changing
+    this removes or adds a default gateway IP of the existing subnet.
 
 * `enable_dhcp` - (Optional) The administrative state of the network.
     Acceptable values are "true" and "false". Changing this value enables or
-    disables the DHCP capabilities of the existing subnet.
+    disables the DHCP capabilities of the existing subnet. Defaults to true.
 
 * `dns_nameservers` - (Optional) An array of DNS name server names used by hosts
     in this subnet. Changing this updates the DNS name servers for the existing

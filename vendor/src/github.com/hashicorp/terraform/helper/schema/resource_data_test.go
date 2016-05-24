@@ -688,6 +688,50 @@ func TestResourceDataGet(t *testing.T) {
 
 			Value: 33.0,
 		},
+
+		// #23 Sets with removed elements
+		{
+			Schema: map[string]*Schema{
+				"ports": &Schema{
+					Type:     TypeSet,
+					Optional: true,
+					Computed: true,
+					Elem:     &Schema{Type: TypeInt},
+					Set: func(a interface{}) int {
+						return a.(int)
+					},
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"ports.#":  "1",
+					"ports.80": "80",
+				},
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"ports.#": &terraform.ResourceAttrDiff{
+						Old: "2",
+						New: "1",
+					},
+					"ports.80": &terraform.ResourceAttrDiff{
+						Old: "80",
+						New: "80",
+					},
+					"ports.8080": &terraform.ResourceAttrDiff{
+						Old:        "8080",
+						New:        "0",
+						NewRemoved: true,
+					},
+				},
+			},
+
+			Key: "ports",
+
+			Value: []interface{}{80},
+		},
 	}
 
 	for i, tc := range cases {
@@ -1465,9 +1509,9 @@ func TestResourceDataSet(t *testing.T) {
 
 			Key: "ports",
 			Value: &Set{
-				m: map[int]interface{}{
-					1: 1,
-					2: 2,
+				m: map[string]interface{}{
+					"1": 1,
+					"2": 2,
 				},
 			},
 
@@ -1502,7 +1546,7 @@ func TestResourceDataSet(t *testing.T) {
 			Err:   true,
 
 			GetKey:   "ports",
-			GetValue: []interface{}{80, 100},
+			GetValue: []interface{}{100, 80},
 		},
 
 		// #11: Set with nested set
@@ -1692,7 +1736,7 @@ func TestResourceDataSet(t *testing.T) {
 		}
 
 		err = d.Set(tc.Key, tc.Value)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("%d err: %s", i, err)
 		}
 
@@ -2882,6 +2926,17 @@ func TestResourceDataSetId_override(t *testing.T) {
 
 	actual := d.State()
 	if actual.ID != "foo" {
+		t.Fatalf("bad: %#v", actual)
+	}
+}
+
+func TestResourceDataSetType(t *testing.T) {
+	d := &ResourceData{}
+	d.SetId("foo")
+	d.SetType("bar")
+
+	actual := d.State()
+	if v := actual.Ephemeral.Type; v != "bar" {
 		t.Fatalf("bad: %#v", actual)
 	}
 }

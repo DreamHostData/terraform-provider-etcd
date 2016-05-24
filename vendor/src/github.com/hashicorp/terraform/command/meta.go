@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/state"
 	"github.com/hashicorp/terraform/terraform"
@@ -58,10 +59,14 @@ type Meta struct {
 	// be overriden.
 	//
 	// backupPath is used to backup the state file before writing a modified
-	// version. It defaults to stateOutPath + DefaultBackupExtention
+	// version. It defaults to stateOutPath + DefaultBackupExtension
+	//
+	// parallelism is used to control the number of concurrent operations
+	// allowed when walking the graph
 	statePath    string
 	stateOutPath string
 	backupPath   string
+	parallelism  int
 }
 
 // initStatePaths is used to initialize the default values for
@@ -74,7 +79,7 @@ func (m *Meta) initStatePaths() {
 		m.stateOutPath = m.statePath
 	}
 	if m.backupPath == "" {
-		m.backupPath = m.stateOutPath + DefaultBackupExtention
+		m.backupPath = m.stateOutPath + DefaultBackupExtension
 	}
 }
 
@@ -121,7 +126,8 @@ func (m *Meta) Context(copts contextOpts) (*terraform.Context, bool, error) {
 						"variable values, create a new plan file.")
 			}
 
-			return plan.Context(opts), true, nil
+			ctx, err := plan.Context(opts)
+			return ctx, true, err
 		}
 	}
 
@@ -140,9 +146,14 @@ func (m *Meta) Context(copts contextOpts) (*terraform.Context, bool, error) {
 	}
 
 	// Load the root module
-	mod, err := module.NewTreeModule("", copts.Path)
-	if err != nil {
-		return nil, false, fmt.Errorf("Error loading config: %s", err)
+	var mod *module.Tree
+	if copts.Path != "" {
+		mod, err = module.NewTreeModule("", copts.Path)
+		if err != nil {
+			return nil, false, fmt.Errorf("Error loading config: %s", err)
+		}
+	} else {
+		mod = module.NewEmptyTree()
 	}
 
 	err = mod.Load(m.moduleStorage(m.DataDir()), copts.GetMode)
@@ -151,9 +162,10 @@ func (m *Meta) Context(copts contextOpts) (*terraform.Context, bool, error) {
 	}
 
 	opts.Module = mod
+	opts.Parallelism = copts.Parallelism
 	opts.State = state.State()
-	ctx := terraform.NewContext(opts)
-	return ctx, false, nil
+	ctx, err := terraform.NewContext(opts)
+	return ctx, false, err
 }
 
 // DataDir returns the directory where local data will be stored.
@@ -190,7 +202,7 @@ func (m *Meta) InputMode() terraform.InputMode {
 
 	var mode terraform.InputMode
 	mode |= terraform.InputModeProvider
-	if len(m.variables) == 0 && m.autoKey == "" {
+	if len(m.variables) == 0 {
 		mode |= terraform.InputModeVar
 		mode |= terraform.InputModeVarUnset
 	}
@@ -320,14 +332,17 @@ func (m *Meta) flagSet(n string) *flag.FlagSet {
 	}()
 	f.SetOutput(errW)
 
+	// Set the default Usage to empty
+	f.Usage = func() {}
+
 	return f
 }
 
 // moduleStorage returns the module.Storage implementation used to store
 // modules for commands.
-func (m *Meta) moduleStorage(root string) module.Storage {
+func (m *Meta) moduleStorage(root string) getter.Storage {
 	return &uiModuleStorage{
-		Storage: &module.FolderStorage{
+		Storage: &getter.FolderStorage{
 			StorageDir: filepath.Join(root, "modules"),
 		},
 		Ui: m.Ui,
@@ -351,6 +366,7 @@ func (m *Meta) process(args []string, vars bool) []string {
 	for i, v := range args {
 		if v == "-no-color" {
 			m.color = false
+			m.Color = false
 			args = append(args[:i], args[i+1:]...)
 			break
 		}
@@ -400,12 +416,17 @@ func (m *Meta) uiHook() *UiHook {
 }
 
 const (
-	// The name of the environment variable that can be used to set module depth.
+	// ModuleDepthDefault is the default value for
+	// module depth, which can be overridden by flag
+	// or env var
+	ModuleDepthDefault = -1
+
+	// ModuleDepthEnvVar is the name of the environment variable that can be used to set module depth.
 	ModuleDepthEnvVar = "TF_MODULE_DEPTH"
 )
 
 func (m *Meta) addModuleDepthFlag(flags *flag.FlagSet, moduleDepth *int) {
-	flags.IntVar(moduleDepth, "module-depth", 0, "module-depth")
+	flags.IntVar(moduleDepth, "module-depth", ModuleDepthDefault, "module-depth")
 	if envVar := os.Getenv(ModuleDepthEnvVar); envVar != "" {
 		if md, err := strconv.Atoi(envVar); err == nil {
 			*moduleDepth = md
@@ -429,4 +450,7 @@ type contextOpts struct {
 
 	// Set to true when running a destroy plan/apply.
 	Destroy bool
+
+	// Number of concurrent operations allowed
+	Parallelism int
 }

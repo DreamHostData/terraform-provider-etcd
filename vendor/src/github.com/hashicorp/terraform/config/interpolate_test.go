@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/terraform/config/lang"
+	"github.com/hashicorp/hil"
 )
 
 func TestNewInterpolatedVariable(t *testing.T) {
@@ -66,7 +66,7 @@ func TestNewInterpolatedVariable(t *testing.T) {
 
 	for i, tc := range cases {
 		actual, err := NewInterpolatedVariable(tc.Input)
-		if (err != nil) != tc.Error {
+		if err != nil != tc.Error {
 			t.Fatalf("%d. Error: %s", i, err)
 		}
 		if !reflect.DeepEqual(actual, tc.Result) {
@@ -81,6 +81,9 @@ func TestNewResourceVariable(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
+	if v.Mode != ManagedResourceMode {
+		t.Fatalf("bad: %#v", v)
+	}
 	if v.Type != "foo" {
 		t.Fatalf("bad: %#v", v)
 	}
@@ -95,6 +98,33 @@ func TestNewResourceVariable(t *testing.T) {
 	}
 
 	if v.FullKey() != "foo.bar.baz" {
+		t.Fatalf("bad: %#v", v)
+	}
+}
+
+func TestNewResourceVariableData(t *testing.T) {
+	v, err := NewResourceVariable("data.foo.bar.baz")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if v.Mode != DataResourceMode {
+		t.Fatalf("bad: %#v", v)
+	}
+	if v.Type != "foo" {
+		t.Fatalf("bad: %#v", v)
+	}
+	if v.Name != "bar" {
+		t.Fatalf("bad: %#v", v)
+	}
+	if v.Field != "baz" {
+		t.Fatalf("bad: %#v", v)
+	}
+	if v.Multi {
+		t.Fatal("should not be multi")
+	}
+
+	if v.FullKey() != "data.foo.bar.baz" {
 		t.Fatalf("bad: %#v", v)
 	}
 }
@@ -222,7 +252,7 @@ func TestDetectVariables(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		ast, err := lang.Parse(tc.Input)
+		ast, err := hil.Parse(tc.Input)
 		if err != nil {
 			t.Fatalf("%s\n\nInput: %s", err, tc.Input)
 		}

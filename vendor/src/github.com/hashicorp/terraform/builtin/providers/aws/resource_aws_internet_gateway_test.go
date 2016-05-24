@@ -22,8 +22,8 @@ func TestAccAWSInternetGateway_basic(t *testing.T) {
 			return fmt.Errorf("IG B is not attached")
 		}
 
-		id1 := v.Attachments[0].VPCID
-		id2 := v2.Attachments[0].VPCID
+		id1 := v.Attachments[0].VpcId
+		id2 := v2.Attachments[0].VpcId
 		if id1 == id2 {
 			return fmt.Errorf("Both attachment IDs are the same")
 		}
@@ -32,9 +32,10 @@ func TestAccAWSInternetGateway_basic(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInternetGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_internet_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInternetGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInternetGatewayConfig,
@@ -70,9 +71,10 @@ func TestAccAWSInternetGateway_delete(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInternetGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_internet_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInternetGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccInternetGatewayConfig,
@@ -91,9 +93,10 @@ func TestAccAWSInternetGateway_tags(t *testing.T) {
 	var v ec2.InternetGateway
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckInternetGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_internet_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckInternetGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccCheckInternetGatewayConfigTags,
@@ -125,7 +128,7 @@ func testAccCheckInternetGatewayDestroy(s *terraform.State) error {
 
 		// Try to find the resource
 		resp, err := conn.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
-			InternetGatewayIDs: []*string{aws.String(rs.Primary.ID)},
+			InternetGatewayIds: []*string{aws.String(rs.Primary.ID)},
 		})
 		if err == nil {
 			if len(resp.InternetGateways) > 0 {
@@ -161,7 +164,7 @@ func testAccCheckInternetGatewayExists(n string, ig *ec2.InternetGateway) resour
 
 		conn := testAccProvider.Meta().(*AWSClient).ec2conn
 		resp, err := conn.DescribeInternetGateways(&ec2.DescribeInternetGatewaysInput{
-			InternetGatewayIDs: []*string{aws.String(rs.Primary.ID)},
+			InternetGatewayIds: []*string{aws.String(rs.Primary.ID)},
 		})
 		if err != nil {
 			return err

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -36,6 +36,7 @@ func resourceAwsEcsService() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
+				ForceNew: true,
 			},
 
 			"task_definition": &schema.Schema{
@@ -50,27 +51,45 @@ func resourceAwsEcsService() *schema.Resource {
 
 			"iam_role": &schema.Schema{
 				Type:     schema.TypeString,
+				ForceNew: true,
 				Optional: true,
+			},
+
+			"deployment_maximum_percent": &schema.Schema{
+				Type:     schema.TypeInt,
+				Optional: true,
+				Default:  200,
+			},
+
+			"deployment_minimum_healthy_percent": &schema.Schema{
+				Type:     schema.TypeInt,
+				Optional: true,
+				Default:  100,
 			},
 
 			"load_balancer": &schema.Schema{
 				Type:     schema.TypeSet,
 				Optional: true,
+				ForceNew: true,
+				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"elb_name": &schema.Schema{
 							Type:     schema.TypeString,
 							Required: true,
+							ForceNew: true,
 						},
 
 						"container_name": &schema.Schema{
 							Type:     schema.TypeString,
 							Required: true,
+							ForceNew: true,
 						},
 
 						"container_port": &schema.Schema{
 							Type:     schema.TypeInt,
 							Required: true,
+							ForceNew: true,
 						},
 					},
 				},
@@ -86,7 +105,12 @@ func resourceAwsEcsServiceCreate(d *schema.ResourceData, meta interface{}) error
 	input := ecs.CreateServiceInput{
 		ServiceName:    aws.String(d.Get("name").(string)),
 		TaskDefinition: aws.String(d.Get("task_definition").(string)),
-		DesiredCount:   aws.Long(int64(d.Get("desired_count").(int))),
+		DesiredCount:   aws.Int64(int64(d.Get("desired_count").(int))),
+		ClientToken:    aws.String(resource.UniqueId()),
+		DeploymentConfiguration: &ecs.DeploymentConfiguration{
+			MaximumPercent:        aws.Int64(int64(d.Get("deployment_maximum_percent").(int))),
+			MinimumHealthyPercent: aws.Int64(int64(d.Get("deployment_minimum_healthy_percent").(int))),
+		},
 	}
 
 	if v, ok := d.GetOk("cluster"); ok {
@@ -95,24 +119,46 @@ func resourceAwsEcsServiceCreate(d *schema.ResourceData, meta interface{}) error
 
 	loadBalancers := expandEcsLoadBalancers(d.Get("load_balancer").(*schema.Set).List())
 	if len(loadBalancers) > 0 {
-		log.Printf("[DEBUG] Adding ECS load balancers: %#v", loadBalancers)
+		log.Printf("[DEBUG] Adding ECS load balancers: %s", loadBalancers)
 		input.LoadBalancers = loadBalancers
 	}
 	if v, ok := d.GetOk("iam_role"); ok {
 		input.Role = aws.String(v.(string))
 	}
 
-	log.Printf("[DEBUG] Creating ECS service: %#v", input)
-	out, err := conn.CreateService(&input)
+	log.Printf("[DEBUG] Creating ECS service: %s", input)
+
+	// Retry due to AWS IAM policy eventual consistency
+	// See https://github.com/hashicorp/terraform/issues/2869
+	var out *ecs.CreateServiceOutput
+	var err error
+	err = resource.Retry(2*time.Minute, func() *resource.RetryError {
+		out, err = conn.CreateService(&input)
+
+		if err != nil {
+			ec2err, ok := err.(awserr.Error)
+			if !ok {
+				return resource.NonRetryableError(err)
+			}
+			if ec2err.Code() == "InvalidParameterException" {
+				log.Printf("[DEBUG] Trying to create ECS service again: %q",
+					ec2err.Message())
+				return resource.RetryableError(err)
+			}
+
+			return resource.NonRetryableError(err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
 	service := *out.Service
 
-	log.Printf("[DEBUG] ECS service created: %s", *service.ServiceARN)
-	d.SetId(*service.ServiceARN)
-	d.Set("cluster", *service.ClusterARN)
+	log.Printf("[DEBUG] ECS service created: %s", *service.ServiceArn)
+	d.SetId(*service.ServiceArn)
 
 	return resourceAwsEcsServiceUpdate(d, meta)
 }
@@ -131,10 +177,24 @@ func resourceAwsEcsServiceRead(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
-	service := out.Services[0]
-	log.Printf("[DEBUG] Received ECS service %#v", service)
+	if len(out.Services) < 1 {
+		log.Printf("[DEBUG] Removing ECS service %s (%s) because it's gone", d.Get("name").(string), d.Id())
+		d.SetId("")
+		return nil
+	}
 
-	d.SetId(*service.ServiceARN)
+	service := out.Services[0]
+
+	// Status==INACTIVE means deleted service
+	if *service.Status == "INACTIVE" {
+		log.Printf("[DEBUG] Removing ECS service %q because it's INACTIVE", *service.ServiceArn)
+		d.SetId("")
+		return nil
+	}
+
+	log.Printf("[DEBUG] Received ECS service %s", service)
+
+	d.SetId(*service.ServiceArn)
 	d.Set("name", *service.ServiceName)
 
 	// Save task definition in the same format
@@ -146,10 +206,28 @@ func resourceAwsEcsServiceRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	d.Set("desired_count", *service.DesiredCount)
-	d.Set("cluster", *service.ClusterARN)
 
-	if service.RoleARN != nil {
-		d.Set("iam_role", *service.RoleARN)
+	// Save cluster in the same format
+	if strings.HasPrefix(d.Get("cluster").(string), "arn:aws:ecs:") {
+		d.Set("cluster", *service.ClusterArn)
+	} else {
+		clusterARN := getNameFromARN(*service.ClusterArn)
+		d.Set("cluster", clusterARN)
+	}
+
+	// Save IAM role in the same format
+	if service.RoleArn != nil {
+		if strings.HasPrefix(d.Get("iam_role").(string), "arn:aws:iam:") {
+			d.Set("iam_role", *service.RoleArn)
+		} else {
+			roleARN := getNameFromARN(*service.RoleArn)
+			d.Set("iam_role", roleARN)
+		}
+	}
+
+	if service.DeploymentConfiguration != nil {
+		d.Set("deployment_maximum_percent", *service.DeploymentConfiguration.MaximumPercent)
+		d.Set("deployment_minimum_healthy_percent", *service.DeploymentConfiguration.MinimumHealthyPercent)
 	}
 
 	if service.LoadBalancers != nil {
@@ -170,11 +248,18 @@ func resourceAwsEcsServiceUpdate(d *schema.ResourceData, meta interface{}) error
 
 	if d.HasChange("desired_count") {
 		_, n := d.GetChange("desired_count")
-		input.DesiredCount = aws.Long(int64(n.(int)))
+		input.DesiredCount = aws.Int64(int64(n.(int)))
 	}
 	if d.HasChange("task_definition") {
 		_, n := d.GetChange("task_definition")
 		input.TaskDefinition = aws.String(n.(string))
+	}
+
+	if d.HasChange("deployment_maximum_percent") || d.HasChange("deployment_minimum_healthy_percent") {
+		input.DeploymentConfiguration = &ecs.DeploymentConfiguration{
+			MaximumPercent:        aws.Int64(int64(d.Get("deployment_maximum_percent").(int))),
+			MinimumHealthyPercent: aws.Int64(int64(d.Get("deployment_minimum_healthy_percent").(int))),
+		}
 	}
 
 	out, err := conn.UpdateService(&input)
@@ -182,7 +267,7 @@ func resourceAwsEcsServiceUpdate(d *schema.ResourceData, meta interface{}) error
 		return err
 	}
 	service := out.Service
-	log.Printf("[DEBUG] Updated ECS service %#v", service)
+	log.Printf("[DEBUG] Updated ECS service %s", service)
 
 	return resourceAwsEcsServiceRead(d, meta)
 }
@@ -198,6 +283,12 @@ func resourceAwsEcsServiceDelete(d *schema.ResourceData, meta interface{}) error
 	if err != nil {
 		return err
 	}
+
+	if len(resp.Services) == 0 {
+		log.Printf("[DEBUG] ECS Service %q is already gone", d.Id())
+		return nil
+	}
+
 	log.Printf("[DEBUG] ECS service %s is currently %s", d.Id(), *resp.Services[0].Status)
 
 	if *resp.Services[0].Status == "INACTIVE" {
@@ -210,20 +301,40 @@ func resourceAwsEcsServiceDelete(d *schema.ResourceData, meta interface{}) error
 		_, err = conn.UpdateService(&ecs.UpdateServiceInput{
 			Service:      aws.String(d.Id()),
 			Cluster:      aws.String(d.Get("cluster").(string)),
-			DesiredCount: aws.Long(int64(0)),
+			DesiredCount: aws.Int64(int64(0)),
 		})
 		if err != nil {
 			return err
 		}
 	}
 
-	input := ecs.DeleteServiceInput{
-		Service: aws.String(d.Id()),
-		Cluster: aws.String(d.Get("cluster").(string)),
-	}
+	// Wait until the ECS service is drained
+	err = resource.Retry(5*time.Minute, func() *resource.RetryError {
+		input := ecs.DeleteServiceInput{
+			Service: aws.String(d.Id()),
+			Cluster: aws.String(d.Get("cluster").(string)),
+		}
 
-	log.Printf("[DEBUG] Deleting ECS service %#v", input)
-	out, err := conn.DeleteService(&input)
+		log.Printf("[DEBUG] Trying to delete ECS service %s", input)
+		_, err := conn.DeleteService(&input)
+		if err == nil {
+			return nil
+		}
+
+		ec2err, ok := err.(awserr.Error)
+		if !ok {
+			return resource.NonRetryableError(err)
+		}
+		if ec2err.Code() == "InvalidParameterException" {
+			// Prevent "The service cannot be stopped while deployments are active."
+			log.Printf("[DEBUG] Trying to delete ECS service again: %q",
+				ec2err.Message())
+			return resource.RetryableError(err)
+		}
+
+		return resource.NonRetryableError(err)
+
+	})
 	if err != nil {
 		return err
 	}
@@ -231,7 +342,7 @@ func resourceAwsEcsServiceDelete(d *schema.ResourceData, meta interface{}) error
 	// Wait until it's deleted
 	wait := resource.StateChangeConf{
 		Pending:    []string{"DRAINING"},
-		Target:     "INACTIVE",
+		Target:     []string{"INACTIVE"},
 		Timeout:    5 * time.Minute,
 		MinTimeout: 1 * time.Second,
 		Refresh: func() (interface{}, string, error) {
@@ -244,6 +355,7 @@ func resourceAwsEcsServiceDelete(d *schema.ResourceData, meta interface{}) error
 				return resp, "FAILED", err
 			}
 
+			log.Printf("[DEBUG] ECS service (%s) is currently %q", d.Id(), *resp.Services[0].Status)
 			return resp, *resp.Services[0].Status, nil
 		},
 	}
@@ -253,7 +365,7 @@ func resourceAwsEcsServiceDelete(d *schema.ResourceData, meta interface{}) error
 		return err
 	}
 
-	log.Printf("[DEBUG] ECS service %s deleted.", *out.Service.ServiceARN)
+	log.Printf("[DEBUG] ECS service %s deleted.", d.Id())
 	return nil
 }
 
@@ -271,36 +383,11 @@ func buildFamilyAndRevisionFromARN(arn string) string {
 	return strings.Split(arn, "/")[1]
 }
 
-func buildTaskDefinitionARN(taskDefinition string, meta interface{}) (string, error) {
-	// If it's already an ARN, just return it
-	if strings.HasPrefix(taskDefinition, "arn:aws:ecs:") {
-		return taskDefinition, nil
-	}
-
-	// Parse out family & revision
-	family, revision, err := parseTaskDefinition(taskDefinition)
-	if err != nil {
-		return "", err
-	}
-
-	iamconn := meta.(*AWSClient).iamconn
-	region := meta.(*AWSClient).region
-
-	// An zero value GetUserInput{} defers to the currently logged in user
-	resp, err := iamconn.GetUser(&iam.GetUserInput{})
-	if err != nil {
-		return "", fmt.Errorf("GetUser ERROR: %#v", err)
-	}
-
-	// arn:aws:iam::0123456789:user/username
-	userARN := *resp.User.ARN
-	accountID := strings.Split(userARN, ":")[4]
-
-	// arn:aws:ecs:us-west-2:01234567890:task-definition/mongodb:3
-	arn := fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%s",
-		region, accountID, family, revision)
-	log.Printf("[DEBUG] Built task definition ARN: %s", arn)
-	return arn, nil
+// Expects the following ARNs:
+// arn:aws:iam::0123456789:role/EcsService
+// arn:aws:ecs:us-west-2:0123456789:cluster/radek-cluster
+func getNameFromARN(arn string) string {
+	return strings.Split(arn, "/")[1]
 }
 
 func parseTaskDefinition(taskDefinition string) (string, string, error) {

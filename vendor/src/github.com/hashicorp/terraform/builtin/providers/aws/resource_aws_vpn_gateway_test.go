@@ -12,18 +12,18 @@ import (
 )
 
 func TestAccAWSVpnGateway_basic(t *testing.T) {
-	var v, v2 ec2.VPNGateway
+	var v, v2 ec2.VpnGateway
 
 	testNotEqual := func(*terraform.State) error {
-		if len(v.VPCAttachments) == 0 {
+		if len(v.VpcAttachments) == 0 {
 			return fmt.Errorf("VPN gateway A is not attached")
 		}
-		if len(v2.VPCAttachments) == 0 {
+		if len(v2.VpcAttachments) == 0 {
 			return fmt.Errorf("VPN gateway B is not attached")
 		}
 
-		id1 := v.VPCAttachments[0].VPCID
-		id2 := v2.VPCAttachments[0].VPCID
+		id1 := v.VpcAttachments[0].VpcId
+		id2 := v2.VpcAttachments[0].VpcId
 		if id1 == id2 {
 			return fmt.Errorf("Both attachment IDs are the same")
 		}
@@ -32,9 +32,10 @@ func TestAccAWSVpnGateway_basic(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckVpnGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_vpn_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpnGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccVpnGatewayConfig,
@@ -57,7 +58,7 @@ func TestAccAWSVpnGateway_basic(t *testing.T) {
 }
 
 func TestAccAWSVpnGateway_delete(t *testing.T) {
-	var vpnGateway ec2.VPNGateway
+	var vpnGateway ec2.VpnGateway
 
 	testDeleted := func(r string) resource.TestCheckFunc {
 		return func(s *terraform.State) error {
@@ -70,9 +71,10 @@ func TestAccAWSVpnGateway_delete(t *testing.T) {
 	}
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckVpnGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_vpn_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpnGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccVpnGatewayConfig,
@@ -87,13 +89,14 @@ func TestAccAWSVpnGateway_delete(t *testing.T) {
 	})
 }
 
-func TestAccVpnGateway_tags(t *testing.T) {
-	var v ec2.VPNGateway
+func TestAccAWSVpnGateway_tags(t *testing.T) {
+	var v ec2.VpnGateway
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckVpnGatewayDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_vpn_gateway.foo",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpnGatewayDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccCheckVpnGatewayConfigTags,
@@ -124,14 +127,25 @@ func testAccCheckVpnGatewayDestroy(s *terraform.State) error {
 		}
 
 		// Try to find the resource
-		resp, err := ec2conn.DescribeVPNGateways(&ec2.DescribeVPNGatewaysInput{
-			VPNGatewayIDs: []*string{aws.String(rs.Primary.ID)},
+		resp, err := ec2conn.DescribeVpnGateways(&ec2.DescribeVpnGatewaysInput{
+			VpnGatewayIds: []*string{aws.String(rs.Primary.ID)},
 		})
 		if err == nil {
-			if len(resp.VPNGateways) > 0 {
-				return fmt.Errorf("still exists")
+			var v *ec2.VpnGateway
+			for _, g := range resp.VpnGateways {
+				if *g.VpnGatewayId == rs.Primary.ID {
+					v = g
+				}
 			}
 
+			if v == nil {
+				// wasn't found
+				return nil
+			}
+
+			if *v.State != "deleted" {
+				return fmt.Errorf("Expected VpnGateway to be in deleted state, but was not: %s", v)
+			}
 			return nil
 		}
 
@@ -148,7 +162,7 @@ func testAccCheckVpnGatewayDestroy(s *terraform.State) error {
 	return nil
 }
 
-func testAccCheckVpnGatewayExists(n string, ig *ec2.VPNGateway) resource.TestCheckFunc {
+func testAccCheckVpnGatewayExists(n string, ig *ec2.VpnGateway) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[n]
 		if !ok {
@@ -160,17 +174,17 @@ func testAccCheckVpnGatewayExists(n string, ig *ec2.VPNGateway) resource.TestChe
 		}
 
 		ec2conn := testAccProvider.Meta().(*AWSClient).ec2conn
-		resp, err := ec2conn.DescribeVPNGateways(&ec2.DescribeVPNGatewaysInput{
-			VPNGatewayIDs: []*string{aws.String(rs.Primary.ID)},
+		resp, err := ec2conn.DescribeVpnGateways(&ec2.DescribeVpnGatewaysInput{
+			VpnGatewayIds: []*string{aws.String(rs.Primary.ID)},
 		})
 		if err != nil {
 			return err
 		}
-		if len(resp.VPNGateways) == 0 {
+		if len(resp.VpnGateways) == 0 {
 			return fmt.Errorf("VPNGateway not found")
 		}
 
-		*ig = *resp.VPNGateways[0]
+		*ig = *resp.VpnGateways[0]
 
 		return nil
 	}

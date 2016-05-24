@@ -13,20 +13,25 @@ type TargetsTransformer struct {
 	// List of targeted resource names specified by the user
 	Targets []string
 
+	// List of parsed targets, provided by callers like ResourceCountTransform
+	// that already have the targets parsed
+	ParsedTargets []ResourceAddress
+
 	// Set to true when we're in a `terraform destroy` or a
 	// `terraform plan -destroy`
 	Destroy bool
 }
 
 func (t *TargetsTransformer) Transform(g *Graph) error {
-	if len(t.Targets) > 0 {
-		// TODO: duplicated in OrphanTransformer; pull up parsing earlier
+	if len(t.Targets) > 0 && len(t.ParsedTargets) == 0 {
 		addrs, err := t.parseTargetAddresses()
 		if err != nil {
 			return err
 		}
-
-		targetedNodes, err := t.selectTargetedNodes(g, addrs)
+		t.ParsedTargets = addrs
+	}
+	if len(t.ParsedTargets) > 0 {
+		targetedNodes, err := t.selectTargetedNodes(g, t.ParsedTargets)
 		if err != nil {
 			return err
 		}
@@ -34,7 +39,7 @@ func (t *TargetsTransformer) Transform(g *Graph) error {
 		for _, v := range g.Vertices() {
 			if _, ok := v.(GraphNodeAddressable); ok {
 				if !targetedNodes.Include(v) {
-					log.Printf("[DEBUG] Removing %s, filtered by targeting.", v)
+					log.Printf("[DEBUG] Removing %q, filtered by targeting.", dag.VertexName(v))
 					g.Remove(v)
 				}
 			}

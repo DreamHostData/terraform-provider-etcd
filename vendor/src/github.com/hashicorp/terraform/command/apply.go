@@ -7,8 +7,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform/config/module"
+	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/terraform"
 )
 
@@ -39,6 +40,8 @@ func (c *ApplyCommand) Run(args []string) int {
 		cmdFlags.BoolVar(&destroyForce, "force", false, "force")
 	}
 	cmdFlags.BoolVar(&refresh, "refresh", true, "refresh")
+	cmdFlags.IntVar(
+		&c.Meta.parallelism, "parallelism", DefaultParallelism, "parallelism")
 	cmdFlags.StringVar(&c.Meta.statePath, "state", DefaultStateFilename, "path")
 	cmdFlags.StringVar(&c.Meta.stateOutPath, "state-out", "", "path")
 	cmdFlags.StringVar(&c.Meta.backupPath, "backup", "", "path")
@@ -74,7 +77,7 @@ func (c *ApplyCommand) Run(args []string) int {
 
 	if !c.Destroy && maybeInit {
 		// Do a detect to determine if we need to do an init + apply.
-		if detected, err := module.Detect(configPath, pwd); err != nil {
+		if detected, err := getter.Detect(configPath, pwd, getter.Detectors); err != nil {
 			c.Ui.Error(fmt.Sprintf(
 				"Invalid path: %s", err))
 			return 1
@@ -94,9 +97,10 @@ func (c *ApplyCommand) Run(args []string) int {
 
 	// Build the context based on the arguments given
 	ctx, planned, err := c.Context(contextOpts{
-		Destroy:   c.Destroy,
-		Path:      configPath,
-		StatePath: c.Meta.statePath,
+		Destroy:     c.Destroy,
+		Path:        configPath,
+		StatePath:   c.Meta.statePath,
+		Parallelism: c.Meta.parallelism,
 	})
 	if err != nil {
 		c.Ui.Error(err.Error())
@@ -108,11 +112,27 @@ func (c *ApplyCommand) Run(args []string) int {
 		return 1
 	}
 	if !destroyForce && c.Destroy {
+		// Default destroy message
+		desc := "Terraform will delete all your managed infrastructure.\n" +
+			"There is no undo. Only 'yes' will be accepted to confirm."
+
+		// If targets are specified, list those to user
+		if c.Meta.targets != nil {
+			var descBuffer bytes.Buffer
+			descBuffer.WriteString("Terraform will delete the following infrastructure:\n")
+			for _, target := range c.Meta.targets {
+				descBuffer.WriteString("\t")
+				descBuffer.WriteString(target)
+				descBuffer.WriteString("\n")
+			}
+			descBuffer.WriteString("There is no undo. Only 'yes' will be accepted to confirm")
+			desc = descBuffer.String()
+		}
+
 		v, err := c.UIInput().Input(&terraform.InputOpts{
-			Id:    "destroy",
-			Query: "Do you really want to destroy?",
-			Description: "Terraform will delete all your managed infrastructure.\n" +
-				"There is no undo. Only 'yes' will be accepted to confirm.",
+			Id:          "destroy",
+			Query:       "Do you really want to destroy?",
+			Description: desc,
 		})
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Error asking for confirmation: %s", err))
@@ -149,7 +169,7 @@ func (c *ApplyCommand) Run(args []string) int {
 		}
 	}
 
-	// Setup the state hook for continous state updates
+	// Setup the state hook for continuous state updates
 	{
 		state, err := c.State()
 		if err != nil {
@@ -230,38 +250,10 @@ func (c *ApplyCommand) Run(args []string) int {
 			c.Meta.StateOutPath())))
 	}
 
-	// If we have outputs, then output those at the end.
-	var outputs map[string]string
-	if !c.Destroy && state != nil {
-		outputs = state.RootModule().Outputs
-	}
-	if len(outputs) > 0 {
-		outputBuf := new(bytes.Buffer)
-		outputBuf.WriteString("[reset][bold][green]\nOutputs:\n\n")
-
-		// Output the outputs in alphabetical order
-		keyLen := 0
-		keys := make([]string, 0, len(outputs))
-		for key, _ := range outputs {
-			keys = append(keys, key)
-			if len(key) > keyLen {
-				keyLen = len(key)
-			}
+	if !c.Destroy {
+		if outputs := outputsAsString(state, ctx.Module().Config().Outputs, true); outputs != "" {
+			c.Ui.Output(c.Colorize().Color(outputs))
 		}
-		sort.Strings(keys)
-
-		for _, k := range keys {
-			v := outputs[k]
-
-			outputBuf.WriteString(fmt.Sprintf(
-				"  %s%s = %s\n",
-				k,
-				strings.Repeat(" ", keyLen-len(k)),
-				v))
-		}
-
-		c.Ui.Output(c.Colorize().Color(
-			strings.TrimSpace(outputBuf.String())))
 	}
 
 	return 0
@@ -285,10 +277,15 @@ func (c *ApplyCommand) Synopsis() string {
 
 func (c *ApplyCommand) helpApply() string {
 	helpText := `
-Usage: terraform apply [options] [DIR]
+Usage: terraform apply [options] [DIR-OR-PLAN]
 
   Builds or changes infrastructure according to Terraform configuration
   files in DIR.
+
+  By default, apply scans the current directory for the configuration
+  and applies the changes appropriately. However, a path to another
+  configuration or an execution plan can be provided. Execution plans can be
+  used to only execute a pre-determined set of actions.
 
   DIR can also be a SOURCE as given to the "init" command. In this case,
   apply behaves as though "init" was called followed by "apply". This only
@@ -305,6 +302,9 @@ Options:
   -input=true            Ask for input for variables if not directly set.
 
   -no-color              If specified, output won't contain any color.
+
+  -parallelism=n         Limit the number of concurrent operations.
+                         Defaults to 10.
 
   -refresh=true          Update state prior to checking for differences. This
                          has no effect if a plan file is given to apply.
@@ -348,6 +348,9 @@ Options:
 
   -no-color              If specified, output won't contain any color.
 
+  -parallelism=n         Limit the number of concurrent operations.
+                         Defaults to 10.
+
   -refresh=true          Update state prior to checking for differences. This
                          has no effect if a plan file is given to apply.
 
@@ -372,4 +375,58 @@ Options:
 
 `
 	return strings.TrimSpace(helpText)
+}
+
+func outputsAsString(state *terraform.State, schema []*config.Output, includeHeader bool) string {
+	if state == nil {
+		return ""
+	}
+
+	outputs := state.RootModule().Outputs
+	outputBuf := new(bytes.Buffer)
+	if len(outputs) > 0 {
+		schemaMap := make(map[string]*config.Output)
+		if schema != nil {
+			for _, s := range schema {
+				schemaMap[s.Name] = s
+			}
+		}
+
+		if includeHeader {
+			outputBuf.WriteString("[reset][bold][green]\nOutputs:\n\n")
+		}
+
+		// Output the outputs in alphabetical order
+		keyLen := 0
+		ks := make([]string, 0, len(outputs))
+		for key, _ := range outputs {
+			ks = append(ks, key)
+			if len(key) > keyLen {
+				keyLen = len(key)
+			}
+		}
+		sort.Strings(ks)
+
+		for _, k := range ks {
+			schema, ok := schemaMap[k]
+			if ok && schema.Sensitive {
+				outputBuf.WriteString(fmt.Sprintf("%s = <sensitive>\n", k))
+				continue
+			}
+
+			v := outputs[k]
+			switch typedV := v.Value.(type) {
+			case string:
+				outputBuf.WriteString(fmt.Sprintf("%s = %s\n", k, typedV))
+			case []interface{}:
+				outputBuf.WriteString(formatListOutput("", k, typedV))
+				outputBuf.WriteString("\n")
+			case map[string]interface{}:
+				outputBuf.WriteString(formatMapOutput("", k, typedV))
+				outputBuf.WriteString("\n")
+			}
+		}
+	}
+
+	return strings.TrimSpace(outputBuf.String())
 }

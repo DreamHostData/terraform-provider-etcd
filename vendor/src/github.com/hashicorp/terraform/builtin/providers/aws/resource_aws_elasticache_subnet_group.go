@@ -3,12 +3,12 @@ package aws
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/elasticache"
-	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 )
@@ -23,21 +23,25 @@ func resourceAwsElasticacheSubnetGroup() *schema.Resource {
 		Schema: map[string]*schema.Schema{
 			"description": &schema.Schema{
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
+				Default:  "Managed by Terraform",
 			},
 			"name": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				StateFunc: func(val interface{}) string {
+					// Elasticache normalizes subnet names to lowercase,
+					// so we have to do this too or else we can end up
+					// with non-converging diffs.
+					return strings.ToLower(val.(string))
+				},
 			},
 			"subnet_ids": &schema.Schema{
 				Type:     schema.TypeSet,
-				Optional: true,
-				Computed: true,
+				Required: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: func(v interface{}) int {
-					return hashcode.String(v.(string))
-				},
+				Set:      schema.HashString,
 			},
 		},
 	}
@@ -58,7 +62,7 @@ func resourceAwsElasticacheSubnetGroupCreate(d *schema.ResourceData, meta interf
 	req := &elasticache.CreateCacheSubnetGroupInput{
 		CacheSubnetGroupDescription: aws.String(desc),
 		CacheSubnetGroupName:        aws.String(name),
-		SubnetIDs:                   subnetIds,
+		SubnetIds:                   subnetIds,
 	}
 
 	_, err := conn.CreateCacheSubnetGroup(req)
@@ -67,7 +71,10 @@ func resourceAwsElasticacheSubnetGroupCreate(d *schema.ResourceData, meta interf
 	}
 
 	// Assign the group name as the resource ID
-	d.SetId(name)
+	// Elasticache always retains the name in lower case, so we have to
+	// mimic that or else we won't be able to refresh a resource whose
+	// name contained uppercase characters.
+	d.SetId(strings.ToLower(name))
 
 	return nil
 }
@@ -123,7 +130,7 @@ func resourceAwsElasticacheSubnetGroupUpdate(d *schema.ResourceData, meta interf
 		_, err := conn.ModifyCacheSubnetGroup(&elasticache.ModifyCacheSubnetGroupInput{
 			CacheSubnetGroupName:        aws.String(d.Get("name").(string)),
 			CacheSubnetGroupDescription: aws.String(d.Get("description").(string)),
-			SubnetIDs:                   subnets,
+			SubnetIds:                   subnets,
 		})
 		if err != nil {
 			return err
@@ -137,22 +144,22 @@ func resourceAwsElasticacheSubnetGroupDelete(d *schema.ResourceData, meta interf
 
 	log.Printf("[DEBUG] Cache subnet group delete: %s", d.Id())
 
-	return resource.Retry(5*time.Minute, func() error {
+	return resource.Retry(5*time.Minute, func() *resource.RetryError {
 		_, err := conn.DeleteCacheSubnetGroup(&elasticache.DeleteCacheSubnetGroupInput{
 			CacheSubnetGroupName: aws.String(d.Id()),
 		})
 		if err != nil {
 			apierr, ok := err.(awserr.Error)
 			if !ok {
-				return err
+				return resource.RetryableError(err)
 			}
-			log.Printf("[DEBUG] APIError.Code: %v", apierr.Code)
+			log.Printf("[DEBUG] APIError.Code: %v", apierr.Code())
 			switch apierr.Code() {
 			case "DependencyViolation":
 				// If it is a dependency violation, we want to retry
-				return err
+				return resource.RetryableError(err)
 			default:
-				return resource.RetryError{Err: err}
+				return resource.NonRetryableError(err)
 			}
 		}
 		return nil

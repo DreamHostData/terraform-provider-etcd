@@ -17,7 +17,7 @@ The interpolation syntax is powerful and allows you to reference
 variables, attributes of resources, call functions, etc.
 
 You can also perform simple math in interpolations, allowing
-you to write expressions such as `${count.index+1}`.
+you to write expressions such as `${count.index + 1}`.
 
 You can escape interpolation with double dollar signs: `$${foo}`
 will be rendered as a literal `${foo}`.
@@ -57,6 +57,8 @@ For example, `${count.index}` will interpolate the current index
 in a multi-count resource. For more information on count, see the
 resource configuration page.
 
+<a id="path-variables"></a>
+
 **To reference path information**, the syntax is `path.TYPE`.
 TYPE can be `cwd`, `module`, or `root`. `cwd` will interpolate the
 cwd. `module` will interpolate the path to the current module. `root`
@@ -72,8 +74,43 @@ are documented below.
 
 The supported built-in functions are:
 
-  * `concat(args...)` - Concatenates the values of multiple arguments into
-      a single string.
+  * `base64decode(string)` - Given a base64-encoded string, decodes it and
+    returns the original string.
+
+  * `base64encode(string)` - Returns a base64-encoded representation of the
+    given string.
+
+  * `base64sha256(string)` - Returns a base64-encoded representation of raw
+    SHA-256 sum of the given string.
+    **This is not equivalent** of `base64encode(sha256(string))`
+    since `sha256()` returns hexadecimal representation.
+
+  * `cidrhost(iprange, hostnum)` - Takes an IP address range in CIDR notation
+    and creates an IP address with the given host number. For example,
+    ``cidrhost("10.0.0.0/8", 2)`` returns ``10.0.0.2``.
+
+  * `cidrnetmask(iprange)` - Takes an IP address range in CIDR notation
+    and returns the address-formatted subnet mask format that some
+    systems expect for IPv4 interfaces. For example,
+    ``cidrmask("10.0.0.0/8")`` returns ``255.0.0.0``. Not applicable
+    to IPv6 networks since CIDR notation is the only valid notation for
+    IPv6.
+
+  * `cidrsubnet(iprange, newbits, netnum)` - Takes an IP address range in
+    CIDR notation (like ``10.0.0.0/8``) and extends its prefix to include an
+    additional subnet number. For example,
+    ``cidrsubnet("10.0.0.0/8", 8, 2)`` returns ``10.2.0.0/16``.
+
+  * `coalesce(string1, string2, ...)` - Returns the first non-empty value from
+    the given arguments. At least two arguments must be provided.
+
+  * `compact(list)` - Removes empty string elements from a list. This can be
+     useful in some cases, for example when passing joined lists as module
+     variables or when parsing module outputs.
+     Example: `compact(module.my_asg.load_balancer_names)`
+
+  * `concat(list1, list2)` - Combines two or more lists into a single list.
+     Example: `concat(aws_instance.db.*.tags.Name, aws_instance.web.*.tags.Name)`
 
   * `element(list, index)` - Returns a single element from a list
       at the given index. If the index is greater than the number of
@@ -84,13 +121,17 @@ The supported built-in functions are:
 
   * `file(path)` - Reads the contents of a file into the string. Variables
       in this file are _not_ interpolated. The contents of the file are
-      read as-is.
+      read as-is. The `path` is interpreted relative to the working directory.
+      [Path variables](#path-variables) can be used to reference paths relative
+      to other base locations. For example, when using `file()` from inside a
+      module, you generally want to make the path relative to the module base,
+      like this: `file("${path.module}/file")`.
 
   * `format(format, args...)` - Formats a string according to the given
       format. The syntax for the format is standard `sprintf` syntax.
-      Good documentation for the syntax can be [found here](http://golang.org/pkg/fmt/).
+      Good documentation for the syntax can be [found here](https://golang.org/pkg/fmt/).
       Example to zero-prefix a count, used commonly for naming servers:
-      `format("web-%03d", count.index+1)`.
+      `format("web-%03d", count.index + 1)`.
 
   * `formatlist(format, args...)` - Formats each element of a list
       according to the given format, similarly to `format`, and returns a list.
@@ -102,9 +143,17 @@ The supported built-in functions are:
       `formatlist("instance %v has private ip %v", aws_instance.foo.*.id, aws_instance.foo.*.private_ip)`.
       Passing lists with different lengths to formatlist results in an error.
 
+  * `index(list, elem)` - Finds the index of a given element in a list. Example:
+      `index(aws_instance.foo.*.tags.Name, "foo-test")`
+
   * `join(delim, list)` - Joins the list with the delimiter. A list is
       only possible with splat variables from resources with a count
       greater than one. Example: `join(",", aws_instance.foo.*.id)`
+
+  * `jsonencode(item)` - Returns a JSON-encoded representation of the given
+    item, which may be a string, list of strings, or map from string to string.
+    Note that if the item is a string, the return value includes the double
+    quotes.
 
   * `length(list)` - Returns a number of members in a given list
       or a number of characters in a given string.
@@ -115,6 +164,11 @@ The supported built-in functions are:
       variable. The `map` parameter should be another variable, such
       as `var.amis`.
 
+  * `lower(string)` - Returns a copy of the string with all Unicode letters mapped to their lower case.
+
+  * `md5(string)` - Returns a (conventional) hexadecimal representation of the
+    MD5 hash of the given string.
+
   * `replace(string, search, replace)` - Does a search and replace on the
       given string. All instances of `search` are replaced with the value
       of `replace`. If `search` is wrapped in forward slashes, it is treated
@@ -122,6 +176,20 @@ The supported built-in functions are:
       can reference subcaptures in the regular expression by using `$n` where
       `n` is the index or name of the subcapture. If using a regular expression,
       the syntax conforms to the [re2 regular expression syntax](https://code.google.com/p/re2/wiki/Syntax).
+
+  * `sha1(string)` - Returns a (conventional) hexadecimal representation of the
+    SHA-1 hash of the given string.
+    Example: `"${sha1(concat(aws_vpc.default.tags.customer, "-s3-bucket"))}"`
+
+  * `sha256(string)` - Returns a (conventional) hexadecimal representation of the
+    SHA-256 hash of the given string.
+    Example: `"${sha256(concat(aws_vpc.default.tags.customer, "-s3-bucket"))}"`
+
+  * `signum(int)` - Returns -1 for negative numbers, 0 for 0 and 1 for positive numbers.
+      This function is useful when you need to set a value for the first resource and
+      a different value for the rest of the resources.
+      Example: `element(split(",", var.r53_failover_policy), signum(count.index))`
+      where the 0th index points to `PRIMARY` and 1st to `FAILOVER`
 
   * `split(delim, string)` - Splits the string previously created by `join`
       back into a list. This is useful for pushing lists through module
@@ -131,6 +199,12 @@ The supported built-in functions are:
       `a_resource_param = ["${split(",", var.CSV_STRING)}"]`.
       Example: `split(",", module.amod.server_ids)`
 
+  * `trimspace(string)` - Returns a copy of the string with all leading and trailing white spaces removed.
+
+  * `upper(string)` - Returns a copy of the string with all Unicode letters mapped to their upper case.
+
+  * `uuid()` - Returns a UUID string in RFC 4122 v4 format. This string will change with every invocation of the function, so in order to prevent diffs on every plan & apply, it must be used with the [`ignore_changes`](/docs/configuration/resources.html#ignore-changes) lifecycle attribute.
+
 ## Templates
 
 Long strings can be managed using templates. [Templates](/docs/providers/template/index.html) are [resources](/docs/configuration/resources.html) defined by a filename and some variables to use during interpolation. They have a computed `rendered` attribute containing the result.
@@ -139,28 +213,21 @@ A template resource looks like:
 
 ```
 resource "template_file" "example" {
-    filename = "template.txt"
-    vars {
-        hello = "goodnight"
-        world = "moon"
-    }
+  template = "${hello} ${world}!"
+  vars {
+    hello = "goodnight"
+    world = "moon"
+  }
 }
 
 output "rendered" {
-    value = "${template_file.example.rendered}"
+  value = "${template_file.example.rendered}"
 }
-```
-
-Assuming `template.txt` looks like this:
-
-```
-${hello} ${world}!
 ```
 
 Then the rendered value would be `goodnight moon!`.
 
 You may use any of the built-in functions in your template.
-
 
 ### Using Templates with Count
 
@@ -181,8 +248,8 @@ variable "hostnames" {
 
 resource "template_file" "web_init" {
   // here we expand multiple template_files - the same number as we have instances
-  count = "${var.count}"
-  filename = "templates/web_init.tpl"
+  count    = "${var.count}"
+  template = "${file("templates/web_init.tpl")}"
   vars {
     // that gives us access to use count.index to do the lookup
     hostname = "${lookup(var.hostnames, count.index)}"
@@ -199,3 +266,34 @@ resource "aws_instance" "web" {
 
 With this, we will build a list of `template_file.web_init` resources which we can
 use in combination with our list of `aws_instance.web` resources.
+
+## Math
+
+Simple math can be performed in interpolations:
+
+```
+variable "count" {
+  default = 2
+}
+
+resource "aws_instance" "web" {
+  // ...
+  count = "${var.count}"
+
+  // tag the instance with a counter starting at 1, ie. web-001
+  tags {
+    Name = "${format("web-%03d", count.index + 1)}"
+  }
+}
+```
+
+The supported operations are:
+
+- *Add* (`+`), *Subtract* (`-`), *Multiply* (`*`), and *Divide* (`/`) for **float** types
+- *Add* (`+`), *Subtract* (`-`), *Multiply* (`*`), *Divide* (`/`), and *Modulo* (`%`) for **integer** types
+
+-> **Note:** Since Terraform allows hyphens in resource and variable names,
+it's best to use spaces between math operators to prevent confusion or unexpected
+behavior. For example, `${var.instance-count - 1}` will subtract **1** from the
+`instance-count` variable value, while `${var.instance-count-1}` will interpolate
+the `instance-count-1` variable value.

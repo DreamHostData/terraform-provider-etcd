@@ -1,10 +1,6 @@
 package terraform
 
 import (
-	"bytes"
-	"crypto/sha1"
-	"encoding/gob"
-	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -13,27 +9,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 )
 
 // This is the directory where our test fixtures are.
 const fixtureDir = "./test-fixtures"
-
-func checksumStruct(t *testing.T, i interface{}) string {
-	// TODO(mitchellh): write a library to do this because gob is not
-	// deterministic in order
-	return "foo"
-
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	if err := enc.Encode(i); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-
-	sum := sha1.Sum(buf.Bytes())
-	return hex.EncodeToString(sum[:])
-}
 
 func tempDir(t *testing.T) string {
 	dir, err := ioutil.TempDir("", "tf")
@@ -56,7 +38,7 @@ func tempEnv(t *testing.T, k string, v string) string {
 }
 
 func testConfig(t *testing.T, name string) *config.Config {
-	c, err := config.Load(filepath.Join(fixtureDir, name, "main.tf"))
+	c, err := config.LoadFile(filepath.Join(fixtureDir, name, "main.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -70,7 +52,7 @@ func testModule(t *testing.T, name string) *module.Tree {
 		t.Fatalf("err: %s", err)
 	}
 
-	s := &module.FolderStorage{StorageDir: tempDir(t)}
+	s := &getter.FolderStorage{StorageDir: tempDir(t)}
 	if err := mod.Load(s, module.GetModeGet); err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -379,6 +361,23 @@ do_instance.foo:
   type = do_instance
 `
 
+const testTerraformApplyModuleOnlyProviderStr = `
+<no state>
+module.child:
+  aws_instance.foo:
+    ID = foo
+  test_instance.foo:
+    ID = foo
+`
+
+const testTerraformApplyModuleProviderAliasStr = `
+<no state>
+module.child:
+  aws_instance.foo:
+    ID = foo
+    provider = aws.eu
+`
+
 const testTerraformApplyOutputOrphanStr = `
 <no state>
 Outputs:
@@ -464,6 +463,11 @@ aws_instance.bar:
 
 const testTerraformApplyDestroyStr = `
 <no state>
+`
+
+const testTerraformApplyDestroyNestedModuleStr = `
+module.child.subchild:
+  <no state>
 `
 
 const testTerraformApplyErrorStr = `
@@ -552,6 +556,22 @@ Outputs:
 foo_num = 2
 `
 
+const testTerraformApplyOutputAddStr = `
+aws_instance.test.0:
+  ID = foo
+  foo = foo0
+  type = aws_instance
+aws_instance.test.1:
+  ID = foo
+  foo = foo1
+  type = aws_instance
+
+Outputs:
+
+firstOutput = foo0
+secondOutput = foo1
+`
+
 const testTerraformApplyOutputListStr = `
 aws_instance.bar.0:
   ID = foo
@@ -572,7 +592,7 @@ aws_instance.foo:
 
 Outputs:
 
-foo_num = bar,bar,bar
+foo_num = [bar,bar,bar]
 `
 
 const testTerraformApplyOutputMultiStr = `
@@ -944,6 +964,18 @@ STATE:
 <no state>
 `
 
+const testTerraformPlanEscapedVarStr = `
+DIFF:
+
+CREATE: aws_instance.foo
+  foo:  "" => "bar-${baz}"
+  type: "" => "aws_instance"
+
+STATE:
+
+<no state>
+`
+
 const testTerraformPlanModulesStr = `
 DIFF:
 
@@ -1263,4 +1295,17 @@ CREATE: aws_instance.foo
 STATE:
 
 <no state>
+`
+
+const testTerraformPlanIgnoreChangesStr = `
+DIFF:
+
+UPDATE: aws_instance.foo
+  type: "" => "aws_instance"
+
+STATE:
+
+aws_instance.foo:
+  ID = bar
+  ami = ami-abcd1234
 `

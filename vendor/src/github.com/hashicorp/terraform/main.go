@@ -6,15 +6,20 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 
-	"github.com/hashicorp/terraform/plugin"
+	"github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/terraform/helper/logging"
+	"github.com/mattn/go-colorable"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/panicwrap"
 	"github.com/mitchellh/prefixedio"
 )
 
 func main() {
+	// Override global prefix set by go-dynect during init()
+	log.SetPrefix("")
 	os.Exit(realMain())
 }
 
@@ -23,13 +28,10 @@ func realMain() int {
 
 	if !panicwrap.Wrapped(&wrapConfig) {
 		// Determine where logs should go in general (requested by the user)
-		logWriter, err := logOutput()
+		logWriter, err := logging.LogOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Couldn't setup log output: %s", err)
 			return 1
-		}
-		if logWriter == nil {
-			logWriter = ioutil.Discard
 		}
 
 		// We always send logs to a temporary file that we use in case
@@ -41,10 +43,6 @@ func realMain() int {
 		}
 		defer os.Remove(logTempFile.Name())
 		defer logTempFile.Close()
-
-		// Tell the logger to log to this file
-		os.Setenv(EnvLog, "")
-		os.Setenv(EnvLogFile, "")
 
 		// Setup the prefixed readers that send data properly to
 		// stdout/stderr.
@@ -90,7 +88,7 @@ func wrappedMain() int {
 
 	// Load the configuration
 	config := BuiltinConfig
-	if err := config.Discover(); err != nil {
+	if err := config.Discover(Ui); err != nil {
 		Ui.Error(fmt.Sprintf("Error discovering plugins: %s", err))
 		return 1
 	}
@@ -100,10 +98,6 @@ func wrappedMain() int {
 
 	// Make sure we clean up any managed plugins at the end of this
 	defer plugin.CleanupClients()
-
-	// Initialize the TFConfig settings for the commands...
-	ContextOpts.Providers = config.ProviderFactories()
-	ContextOpts.Provisioners = config.ProvisionerFactories()
 
 	// Get the command line args. We shortcut "--version" and "-v" to
 	// just show the version.
@@ -121,7 +115,7 @@ func wrappedMain() int {
 	cli := &cli.CLI{
 		Args:       args,
 		Commands:   Commands,
-		HelpFunc:   cli.BasicHelpFunc("terraform"),
+		HelpFunc:   helpFunc,
 		HelpWriter: os.Stdout,
 	}
 
@@ -210,19 +204,27 @@ func copyOutput(r io.Reader, doneCh chan<- struct{}) {
 		panic(err)
 	}
 
+	var stdout io.Writer = os.Stdout
+	var stderr io.Writer = os.Stderr
+
+	if runtime.GOOS == "windows" {
+		stdout = colorable.NewColorableStdout()
+		stderr = colorable.NewColorableStderr()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stderr, stderrR)
+		io.Copy(stderr, stderrR)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stdout, stdoutR)
+		io.Copy(stdout, stdoutR)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stdout, defaultR)
+		io.Copy(stdout, defaultR)
 	}()
 
 	wg.Wait()

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/hashicorp/hcl/hcl/ast"
+	"github.com/hashicorp/hcl/testhelper"
 )
 
 func TestDecode_interface(t *testing.T) {
@@ -44,10 +47,26 @@ func TestDecode_interface(t *testing.T) {
 			},
 		},
 		{
+			"tfvars.hcl",
+			false,
+			map[string]interface{}{
+				"regularvar": "Should work",
+				"map.key1":   "Value",
+				"map.key2":   "Other value",
+			},
+		},
+		{
 			"escape.hcl",
 			false,
 			map[string]interface{}{
 				"foo": "bar\"baz\\n",
+			},
+		},
+		{
+			"interpolate_escape.hcl",
+			false,
+			map[string]interface{}{
+				"foo": "${file(\"bing/bong.txt\")}",
 			},
 		},
 		{
@@ -59,8 +78,33 @@ func TestDecode_interface(t *testing.T) {
 		},
 		{
 			"multiline_bad.hcl",
+			true,
+			nil,
+		},
+		{
+			"multiline_no_marker.hcl",
+			true,
+			nil,
+		},
+		{
+			"multiline.hcl",
 			false,
-			map[string]interface{}{"foo": "bar\nbaz\n"},
+			map[string]interface{}{"foo": testhelper.Unix2dos("bar\nbaz\n")},
+		},
+		{
+			"multiline_indented.hcl",
+			false,
+			map[string]interface{}{"foo": testhelper.Unix2dos("  bar\n  baz\n")},
+		},
+		{
+			"multiline_no_hanging_indent.hcl",
+			false,
+			map[string]interface{}{"foo": testhelper.Unix2dos("  baz\n    bar\n      foo\n")},
+		},
+		{
+			"multiline_no_eof.hcl",
+			false,
+			map[string]interface{}{"foo": testhelper.Unix2dos("bar\nbaz\n"), "key": "value"},
 		},
 		{
 			"multiline.json",
@@ -130,6 +174,8 @@ func TestDecode_interface(t *testing.T) {
 						"baz": []map[string]interface{}{
 							map[string]interface{}{"key": 7},
 						},
+					},
+					map[string]interface{}{
 						"bar": []map[string]interface{}{
 							map[string]interface{}{"key": 12},
 						},
@@ -155,7 +201,7 @@ func TestDecode_interface(t *testing.T) {
 			"structure_list.json",
 			false,
 			map[string]interface{}{
-				"foo": []interface{}{
+				"foo": []map[string]interface{}{
 					map[string]interface{}{
 						"key": 7,
 					},
@@ -174,7 +220,7 @@ func TestDecode_interface(t *testing.T) {
 						"foo": []map[string]interface{}{
 							map[string]interface{}{
 								"name": "terraform_example",
-								"ingress": []interface{}{
+								"ingress": []map[string]interface{}{
 									map[string]interface{}{
 										"from_port": 22,
 									},
@@ -188,9 +234,68 @@ func TestDecode_interface(t *testing.T) {
 				},
 			},
 		},
+
+		{
+			"nested_block_comment.hcl",
+			false,
+			map[string]interface{}{
+				"bar": "value",
+			},
+		},
+
+		{
+			"unterminated_block_comment.hcl",
+			true,
+			nil,
+		},
+
+		{
+			"unterminated_brace.hcl",
+			true,
+			nil,
+		},
+
+		{
+			"nested_provider_bad.hcl",
+			true,
+			// This is not ideal but without significant rework of the decoder
+			// we get a partial result back as well as an error.
+			map[string]interface{}{},
+		},
+
+		{
+			"object_list.json",
+			false,
+			map[string]interface{}{
+				"resource": []map[string]interface{}{
+					map[string]interface{}{
+						"aws_instance": []map[string]interface{}{
+							map[string]interface{}{
+								"db": []map[string]interface{}{
+									map[string]interface{}{
+										"vpc": "foo",
+										"provisioner": []map[string]interface{}{
+											map[string]interface{}{
+												"file": []map[string]interface{}{
+													map[string]interface{}{
+														"source":      "foo",
+														"destination": "bar",
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range cases {
+		t.Logf("Testing: %s", tc.File)
 		d, err := ioutil.ReadFile(filepath.Join(fixtureDir, tc.File))
 		if err != nil {
 			t.Fatalf("err: %s", err)
@@ -203,7 +308,17 @@ func TestDecode_interface(t *testing.T) {
 		}
 
 		if !reflect.DeepEqual(out, tc.Out) {
-			t.Fatalf("Input: %s\n\nActual: %#v\n\nExpected: %#v", tc.File, out, tc.Out)
+			t.Fatalf("Input: %s. Actual, Expected.\n\n%#v\n\n%#v", tc.File, out, tc.Out)
+		}
+
+		var v interface{}
+		err = Unmarshal(d, &v)
+		if (err != nil) != tc.Err {
+			t.Fatalf("Input: %s\n\nError: %s", tc.File, err)
+		}
+
+		if !reflect.DeepEqual(v, tc.Out) {
+			t.Fatalf("Input: %s. Actual, Expected.\n\n%#v\n\n%#v", tc.File, out, tc.Out)
 		}
 	}
 }
@@ -382,7 +497,49 @@ func TestDecode_structureArray(t *testing.T) {
 
 		err := Decode(&actual, testReadFile(t, f))
 		if err != nil {
-			t.Fatalf("err: %s", err)
+			t.Fatalf("Input: %s\n\nerr: %s", f, err)
+		}
+
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("Input: %s\n\nActual: %#v\n\nExpected: %#v", f, actual, expected)
+		}
+	}
+}
+
+func TestDecode_sliceExpand(t *testing.T) {
+	type testInner struct {
+		Name string `hcl:",key"`
+		Key  string
+	}
+
+	type testStruct struct {
+		Services []testInner `hcl:"service,expand"`
+	}
+
+	expected := testStruct{
+		Services: []testInner{
+			testInner{
+				Name: "my-service-0",
+				Key:  "value",
+			},
+			testInner{
+				Name: "my-service-1",
+				Key:  "value",
+			},
+		},
+	}
+
+	files := []string{
+		"slice_expand.hcl",
+	}
+
+	for _, f := range files {
+		t.Logf("Testing: %s", f)
+
+		var actual testStruct
+		err := Decode(&actual, testReadFile(t, f))
+		if err != nil {
+			t.Fatalf("Input: %s\n\nerr: %s", f, err)
 		}
 
 		if !reflect.DeepEqual(actual, expected) {
@@ -430,8 +587,9 @@ func TestDecode_structureMap(t *testing.T) {
 	}
 
 	for _, f := range files {
-		var actual rawConfig
+		t.Logf("Testing: %s", f)
 
+		var actual rawConfig
 		err := Decode(&actual, testReadFile(t, f))
 		if err != nil {
 			t.Fatalf("Input: %s\n\nerr: %s", f, err)
@@ -463,5 +621,110 @@ func TestDecode_intString(t *testing.T) {
 
 	if value.Count != 3 {
 		t.Fatalf("bad: %#v", value.Count)
+	}
+}
+
+func TestDecode_Node(t *testing.T) {
+	// given
+	var value struct {
+		Content ast.Node
+		Nested  struct {
+			Content ast.Node
+		}
+	}
+
+	content := `
+content {
+	hello = "world"
+}
+`
+
+	// when
+	err := Decode(&value, content)
+
+	// then
+	if err != nil {
+		t.Errorf("unable to decode content, %v", err)
+		return
+	}
+
+	// verify ast.Node can be decoded later
+	var v map[string]interface{}
+	err = DecodeObject(&v, value.Content)
+	if err != nil {
+		t.Errorf("unable to decode content, %v", err)
+		return
+	}
+
+	if v["hello"] != "world" {
+		t.Errorf("expected mapping to be returned")
+	}
+}
+
+func TestDecode_NestedNode(t *testing.T) {
+	// given
+	var value struct {
+		Nested struct {
+			Content ast.Node
+		}
+	}
+
+	content := `
+nested "content" {
+	hello = "world"
+}
+`
+
+	// when
+	err := Decode(&value, content)
+
+	// then
+	if err != nil {
+		t.Errorf("unable to decode content, %v", err)
+		return
+	}
+
+	// verify ast.Node can be decoded later
+	var v map[string]interface{}
+	err = DecodeObject(&v, value.Nested.Content)
+	if err != nil {
+		t.Errorf("unable to decode content, %v", err)
+		return
+	}
+
+	if v["hello"] != "world" {
+		t.Errorf("expected mapping to be returned")
+	}
+}
+
+// https://github.com/hashicorp/hcl/issues/60
+func TestDecode_topLevelKeys(t *testing.T) {
+	type Template struct {
+		Source string
+	}
+
+	templates := struct {
+		Templates []*Template `hcl:"template"`
+	}{}
+
+	err := Decode(&templates, `
+	template {
+	    source = "blah"
+	}
+
+	template {
+	    source = "blahblah"
+	}`)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if templates.Templates[0].Source != "blah" {
+		t.Errorf("bad source: %s", templates.Templates[0].Source)
+	}
+
+	if templates.Templates[1].Source != "blahblah" {
+		t.Errorf("bad source: %s", templates.Templates[1].Source)
 	}
 }

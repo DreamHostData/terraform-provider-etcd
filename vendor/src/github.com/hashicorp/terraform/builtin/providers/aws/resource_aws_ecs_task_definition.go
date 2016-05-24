@@ -17,7 +17,6 @@ func resourceAwsEcsTaskDefinition() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceAwsEcsTaskDefinitionCreate,
 		Read:   resourceAwsEcsTaskDefinitionRead,
-		Update: resourceAwsEcsTaskDefinitionUpdate,
 		Delete: resourceAwsEcsTaskDefinitionDelete,
 
 		Schema: map[string]*schema.Schema{
@@ -40,6 +39,7 @@ func resourceAwsEcsTaskDefinition() *schema.Resource {
 			"container_definitions": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				ForceNew: true,
 				StateFunc: func(v interface{}) string {
 					hash := sha1.Sum([]byte(v.(string)))
 					return hex.EncodeToString(hash[:])
@@ -49,6 +49,7 @@ func resourceAwsEcsTaskDefinition() *schema.Resource {
 			"volume": &schema.Schema{
 				Type:     schema.TypeSet,
 				Optional: true,
+				ForceNew: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"name": &schema.Schema{
@@ -58,7 +59,7 @@ func resourceAwsEcsTaskDefinition() *schema.Resource {
 
 						"host_path": &schema.Schema{
 							Type:     schema.TypeString,
-							Required: true,
+							Optional: true,
 						},
 					},
 				},
@@ -90,7 +91,7 @@ func resourceAwsEcsTaskDefinitionCreate(d *schema.ResourceData, meta interface{}
 		input.Volumes = volumes
 	}
 
-	log.Printf("[DEBUG] Registering ECS task definition: %#v", input)
+	log.Printf("[DEBUG] Registering ECS task definition: %s", input)
 	out, err := conn.RegisterTaskDefinition(&input)
 	if err != nil {
 		return err
@@ -98,11 +99,11 @@ func resourceAwsEcsTaskDefinitionCreate(d *schema.ResourceData, meta interface{}
 
 	taskDefinition := *out.TaskDefinition
 
-	log.Printf("[DEBUG] ECS task definition registered: %#v (rev. %d)",
-		*taskDefinition.TaskDefinitionARN, *taskDefinition.Revision)
+	log.Printf("[DEBUG] ECS task definition registered: %q (rev. %d)",
+		*taskDefinition.TaskDefinitionArn, *taskDefinition.Revision)
 
 	d.SetId(*taskDefinition.Family)
-	d.Set("arn", *taskDefinition.TaskDefinitionARN)
+	d.Set("arn", *taskDefinition.TaskDefinitionArn)
 
 	return resourceAwsEcsTaskDefinitionRead(d, meta)
 }
@@ -117,12 +118,12 @@ func resourceAwsEcsTaskDefinitionRead(d *schema.ResourceData, meta interface{}) 
 	if err != nil {
 		return err
 	}
-	log.Printf("[DEBUG] Received task definition %#v", out)
+	log.Printf("[DEBUG] Received task definition %s", out)
 
 	taskDefinition := out.TaskDefinition
 
 	d.SetId(*taskDefinition.Family)
-	d.Set("arn", *taskDefinition.TaskDefinitionARN)
+	d.Set("arn", *taskDefinition.TaskDefinitionArn)
 	d.Set("family", *taskDefinition.Family)
 	d.Set("revision", *taskDefinition.Revision)
 	d.Set("container_definitions", taskDefinition.ContainerDefinitions)
@@ -131,19 +132,17 @@ func resourceAwsEcsTaskDefinitionRead(d *schema.ResourceData, meta interface{}) 
 	return nil
 }
 
-func resourceAwsEcsTaskDefinitionUpdate(d *schema.ResourceData, meta interface{}) error {
-	return resourceAwsEcsTaskDefinitionCreate(d, meta)
-}
-
 func resourceAwsEcsTaskDefinitionDelete(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ecsconn
 
-	// NOT YET IMPLEMENTED o_O
 	_, err := conn.DeregisterTaskDefinition(&ecs.DeregisterTaskDefinitionInput{
-		TaskDefinition: aws.String(d.Id()),
+		TaskDefinition: aws.String(d.Get("arn").(string)),
 	})
+	if err != nil {
+		return err
+	}
 
-	log.Printf("[DEBUG] Deregistering task definition %s returned %#v", d.Id(), err)
+	log.Printf("[DEBUG] Task definition %q deregistered.", d.Get("arn").(string))
 
 	return nil
 }

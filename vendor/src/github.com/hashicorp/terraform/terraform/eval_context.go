@@ -28,6 +28,9 @@ type EvalContext interface {
 	// initialized) or returns nil if the provider isn't initialized.
 	Provider(string) ResourceProvider
 
+	// CloseProvider closes provider connections that aren't needed anymore.
+	CloseProvider(string) error
+
 	// ConfigureProvider configures the provider with the given
 	// configuration. This is a separate context call because this call
 	// is used to store the provider configuration for inheritance lookups
@@ -51,6 +54,10 @@ type EvalContext interface {
 	// initialized) or returns nil if the provisioner isn't initialized.
 	Provisioner(string) ResourceProvisioner
 
+	// CloseProvisioner closes provisioner connections that aren't needed
+	// anymore.
+	CloseProvisioner(string) error
+
 	// Interpolate takes the given raw configuration and completes
 	// the interpolations, returning the processed ResourceConfig.
 	//
@@ -61,7 +68,7 @@ type EvalContext interface {
 	// SetVariables sets the variables for the module within
 	// this context with the name n. This function call is additive:
 	// the second parameter is merged with any previous call.
-	SetVariables(string, map[string]string)
+	SetVariables(string, map[string]interface{})
 
 	// Diff returns the global diff as well as the lock that should
 	// be used to modify that diff.

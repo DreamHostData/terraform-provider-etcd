@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
@@ -33,6 +34,39 @@ func TestAccAWSSQSQueue_basic(t *testing.T) {
 	})
 }
 
+func TestAccAWSSQSQueue_redrivePolicy(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSSQSQueueDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSSQSConfigWithRedrive(acctest.RandStringFromCharSet(5, acctest.CharSetAlpha)),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSSQSExistsWithDefaults("aws_sqs_queue.my_dead_letter_queue"),
+				),
+			},
+		},
+	})
+}
+
+// Tests formatting and compacting of Policy, Redrive json
+func TestAccAWSSQSQueue_Policybasic(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSSQSQueueDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSSQSConfig_PolicyFormat,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSSQSExistsWithOverrides("aws_sqs_queue.test-email-events"),
+				),
+			},
+		},
+	})
+}
+
 func testAccCheckAWSSQSQueueDestroy(s *terraform.State) error {
 	conn := testAccProvider.Meta().(*AWSClient).sqsconn
 
@@ -43,7 +77,7 @@ func testAccCheckAWSSQSQueueDestroy(s *terraform.State) error {
 
 		// Check if queue exists by checking for its attributes
 		params := &sqs.GetQueueAttributesInput{
-			QueueURL: aws.String(rs.Primary.ID),
+			QueueUrl: aws.String(rs.Primary.ID),
 		}
 		_, err := conn.GetQueueAttributes(params)
 		if err == nil {
@@ -74,7 +108,7 @@ func testAccCheckAWSSQSExistsWithDefaults(n string) resource.TestCheckFunc {
 		conn := testAccProvider.Meta().(*AWSClient).sqsconn
 
 		params := &sqs.GetQueueAttributesInput{
-			QueueURL:       aws.String(rs.Primary.ID),
+			QueueUrl:       aws.String(rs.Primary.ID),
 			AttributeNames: []*string{aws.String("All")},
 		}
 		resp, err := conn.GetQueueAttributes(params)
@@ -124,7 +158,7 @@ func testAccCheckAWSSQSExistsWithOverrides(n string) resource.TestCheckFunc {
 		conn := testAccProvider.Meta().(*AWSClient).sqsconn
 
 		params := &sqs.GetQueueAttributesInput{
-			QueueURL:       aws.String(rs.Primary.ID),
+			QueueUrl:       aws.String(rs.Primary.ID),
 			AttributeNames: []*string{aws.String("All")},
 		}
 		resp, err := conn.GetQueueAttributes(params)
@@ -168,11 +202,83 @@ resource "aws_sqs_queue" "queue-with-defaults" {
 
 const testAccAWSSQSConfigWithOverrides = `
 resource "aws_sqs_queue" "queue-with-overrides" {
-	name = "test-sqs-queue-with-overrides"
-	delay_seconds = 90
-  	max_message_size = 2048
-  	message_retention_seconds = 86400
-  	receive_wait_time_seconds = 10
-  	visibility_timeout_seconds = 60
+  name                       = "test-sqs-queue-with-overrides"
+  delay_seconds              = 90
+  max_message_size           = 2048
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 10
+  visibility_timeout_seconds = 60
+}
+`
+
+func testAccAWSSQSConfigWithRedrive(name string) string {
+	return fmt.Sprintf(`
+resource "aws_sqs_queue" "my_queue" {
+  name                       = "tftestqueuq-%s"
+  delay_seconds              = 0
+  visibility_timeout_seconds = 300
+
+  redrive_policy = <<EOF
+{
+    "maxReceiveCount": 3,
+    "deadLetterTargetArn": "${aws_sqs_queue.my_dead_letter_queue.arn}"
+}
+EOF
+}
+
+resource "aws_sqs_queue" "my_dead_letter_queue" {
+  name = "tfotherqueuq-%s"
+}
+`, name, name)
+}
+
+const testAccAWSSQSConfig_PolicyFormat = `
+variable "sns_name" {
+  default = "tf-test-name-2"
+}
+
+variable "sqs_name" {
+  default = "tf-test-sqs-name-2"
+}
+
+resource "aws_sns_topic" "test_topic" {
+  name = "${var.sns_name}"
+}
+
+resource "aws_sqs_queue" "test-email-events" {
+  name                       = "${var.sqs_name}"
+  depends_on                 = ["aws_sns_topic.test_topic"]
+  delay_seconds              = 90
+  max_message_size           = 2048
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 10
+  visibility_timeout_seconds = 60
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Id": "sqspolicy",
+  "Statement": [
+    {
+      "Sid": "Stmt1451501026839",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:us-west-2:470663696735:${var.sqs_name}",
+      "Condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "arn:aws:sns:us-west-2:470663696735:${var.sns_name}"
+        }
+      }
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_sns_topic_subscription" "test_queue_target" {
+  topic_arn = "${aws_sns_topic.test_topic.arn}"
+  protocol  = "sqs"
+  endpoint  = "${aws_sqs_queue.test-email-events.arn}"
 }
 `

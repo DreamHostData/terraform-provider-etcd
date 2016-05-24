@@ -49,9 +49,12 @@ func (n *EvalValidateCount) Eval(ctx EvalContext) (interface{}, error) {
 	}
 
 RETURN:
-	return nil, &EvalValidateError{
-		Errors: errs,
+	if len(errs) != 0 {
+		err = &EvalValidateError{
+			Errors: errs,
+		}
 	}
+	return nil, err
 }
 
 // EvalValidateProvider is an EvalNode implementation that validates
@@ -104,6 +107,7 @@ type EvalValidateResource struct {
 	Config       **ResourceConfig
 	ResourceName string
 	ResourceType string
+	ResourceMode config.ResourceMode
 }
 
 func (n *EvalValidateResource) Eval(ctx EvalContext) (interface{}, error) {
@@ -111,16 +115,25 @@ func (n *EvalValidateResource) Eval(ctx EvalContext) (interface{}, error) {
 
 	provider := *n.Provider
 	cfg := *n.Config
-	warns, errs := provider.ValidateResource(n.ResourceType, cfg)
+	var warns []string
+	var errs []error
+	// Provider entry point varies depending on resource mode, because
+	// managed resources and data resources are two distinct concepts
+	// in the provider abstraction.
+	switch n.ResourceMode {
+	case config.ManagedResourceMode:
+		warns, errs = provider.ValidateResource(n.ResourceType, cfg)
+	case config.DataResourceMode:
+		warns, errs = provider.ValidateDataSource(n.ResourceType, cfg)
+	}
 
 	// If the resouce name doesn't match the name regular
 	// expression, show a warning.
 	if !config.NameRegexp.Match([]byte(n.ResourceName)) {
-		warns = append(warns, fmt.Sprintf(
+		errs = append(errs, fmt.Errorf(
 			"%s: resource name can only contain letters, numbers, "+
-				"dashes, and underscores.\n"+
-				"This will be an error in Terraform 0.4",
-			n.ResourceName))
+				"dashes, and underscores."+
+				n.ResourceName))
 	}
 
 	if len(warns) == 0 && len(errs) == 0 {

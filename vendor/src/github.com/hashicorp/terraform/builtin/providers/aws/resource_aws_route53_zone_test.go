@@ -64,14 +64,15 @@ func TestCleanChangeID(t *testing.T) {
 	}
 }
 
-func TestAccRoute53Zone_basic(t *testing.T) {
+func TestAccAWSRoute53Zone_basic(t *testing.T) {
 	var zone route53.GetHostedZoneOutput
 	var td route53.ResourceTagSet
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckRoute53ZoneDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_route53_zone.main",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckRoute53ZoneDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccRoute53ZoneConfig,
@@ -85,13 +86,48 @@ func TestAccRoute53Zone_basic(t *testing.T) {
 	})
 }
 
-func TestAccRoute53Zone_private_basic(t *testing.T) {
+func TestAccAWSRoute53Zone_updateComment(t *testing.T) {
+	var zone route53.GetHostedZoneOutput
+	var td route53.ResourceTagSet
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_route53_zone.main",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckRoute53ZoneDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccRoute53ZoneConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoute53ZoneExists("aws_route53_zone.main", &zone),
+					testAccLoadTagsR53(&zone, &td),
+					testAccCheckTagsR53(&td.Tags, "foo", "bar"),
+					resource.TestCheckResourceAttr(
+						"aws_route53_zone.main", "comment", "Custom comment"),
+				),
+			},
+
+			resource.TestStep{
+				Config: testAccRoute53ZoneConfigUpdateComment,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoute53ZoneExists("aws_route53_zone.main", &zone),
+					testAccLoadTagsR53(&zone, &td),
+					resource.TestCheckResourceAttr(
+						"aws_route53_zone.main", "comment", "Change Custom Comment"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSRoute53Zone_private_basic(t *testing.T) {
 	var zone route53.GetHostedZoneOutput
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckRoute53ZoneDestroy,
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_route53_zone.main",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckRoute53ZoneDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
 				Config: testAccRoute53PrivateZoneConfig,
@@ -104,7 +140,7 @@ func TestAccRoute53Zone_private_basic(t *testing.T) {
 	})
 }
 
-func TestAccRoute53Zone_private_region(t *testing.T) {
+func TestAccAWSRoute53Zone_private_region(t *testing.T) {
 	var zone route53.GetHostedZoneOutput
 
 	// record the initialized providers so that we can use them to
@@ -120,6 +156,7 @@ func TestAccRoute53Zone_private_region(t *testing.T) {
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:          func() { testAccPreCheck(t) },
+		IDRefreshName:     "aws_route53_zone.main",
 		ProviderFactories: providerFactories,
 		CheckDestroy:      testAccCheckRoute53ZoneDestroyWithProviders(&providers),
 		Steps: []resource.TestStep{
@@ -159,7 +196,7 @@ func testAccCheckRoute53ZoneDestroyWithProvider(s *terraform.State, provider *sc
 			continue
 		}
 
-		_, err := conn.GetHostedZone(&route53.GetHostedZoneInput{ID: aws.String(rs.Primary.ID)})
+		_, err := conn.GetHostedZone(&route53.GetHostedZoneInput{Id: aws.String(rs.Primary.ID)})
 		if err == nil {
 			return fmt.Errorf("Hosted zone still exists")
 		}
@@ -198,7 +235,7 @@ func testAccCheckRoute53ZoneExistsWithProvider(s *terraform.State, n string, zon
 	}
 
 	conn := provider.Meta().(*AWSClient).r53conn
-	resp, err := conn.GetHostedZone(&route53.GetHostedZoneInput{ID: aws.String(rs.Primary.ID)})
+	resp, err := conn.GetHostedZone(&route53.GetHostedZoneInput{Id: aws.String(rs.Primary.ID)})
 	if err != nil {
 		return fmt.Errorf("Hosted zone err: %v", err)
 	}
@@ -241,12 +278,12 @@ func testAccCheckRoute53ZoneAssociatesWithVpc(n string, zone *route53.GetHostedZ
 
 		var associatedVPC *route53.VPC
 		for _, vpc := range zone.VPCs {
-			if *vpc.VPCID == rs.Primary.ID {
+			if *vpc.VPCId == rs.Primary.ID {
 				associatedVPC = vpc
 			}
 		}
 		if associatedVPC == nil {
-			return fmt.Errorf("VPC: %v is not associated to Zone: %v", n, cleanZoneID(*zone.HostedZone.ID))
+			return fmt.Errorf("VPC: %v is not associated to Zone: %v", n, cleanZoneID(*zone.HostedZone.Id))
 		}
 		return nil
 	}
@@ -256,9 +293,9 @@ func testAccLoadTagsR53(zone *route53.GetHostedZoneOutput, td *route53.ResourceT
 	return func(s *terraform.State) error {
 		conn := testAccProvider.Meta().(*AWSClient).r53conn
 
-		zone := cleanZoneID(*zone.HostedZone.ID)
+		zone := cleanZoneID(*zone.HostedZone.Id)
 		req := &route53.ListTagsForResourceInput{
-			ResourceID:   aws.String(zone),
+			ResourceId:   aws.String(zone),
 			ResourceType: aws.String("hostedzone"),
 		}
 
@@ -277,8 +314,20 @@ func testAccLoadTagsR53(zone *route53.GetHostedZoneOutput, td *route53.ResourceT
 
 const testAccRoute53ZoneConfig = `
 resource "aws_route53_zone" "main" {
-	name = "hashicorp.com"
+	name = "hashicorp.com."
 	comment = "Custom comment"
+
+	tags {
+		foo = "bar"
+		Name = "tf-route53-tag-test"
+	}
+}
+`
+
+const testAccRoute53ZoneConfigUpdateComment = `
+resource "aws_route53_zone" "main" {
+	name = "hashicorp.com."
+	comment = "Change Custom Comment"
 
 	tags {
 		foo = "bar"
@@ -296,7 +345,7 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_route53_zone" "main" {
-	name = "hashicorp.com"
+	name = "hashicorp.com."
 	vpc_id = "${aws_vpc.main.id}"
 }
 `
@@ -322,7 +371,7 @@ resource "aws_vpc" "main" {
 
 resource "aws_route53_zone" "main" {
 	provider = "aws.west"
-	name = "hashicorp.com"
+	name = "hashicorp.com."
 	vpc_id = "${aws_vpc.main.id}"
 	vpc_region = "us-east-1"
 }

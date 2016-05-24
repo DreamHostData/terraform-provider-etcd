@@ -97,6 +97,15 @@ func TestMapFieldWriter(t *testing.T) {
 			},
 		},
 
+		"string nil": {
+			[]string{"string"},
+			nil,
+			false,
+			map[string]string{
+				"string": "",
+			},
+		},
+
 		"list of resources": {
 			[]string{"listResource"},
 			[]interface{}{
@@ -242,7 +251,7 @@ func TestMapFieldWriter(t *testing.T) {
 	for name, tc := range cases {
 		w := &MapFieldWriter{Schema: schema}
 		err := w.WriteField(tc.Addr, tc.Value)
-		if (err != nil) != tc.Err {
+		if err != nil != tc.Err {
 			t.Fatalf("%s: err: %s", name, err)
 		}
 

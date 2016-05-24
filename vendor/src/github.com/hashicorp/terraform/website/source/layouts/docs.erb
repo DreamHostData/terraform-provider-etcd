@@ -4,7 +4,7 @@
 			<ul class="nav docs-sidenav">
 				<li<%= sidebar_current("docs-home") %>>
 				<a href="/docs/index.html">Documentation Home</a>
-                </li>
+				</li>
 
 				<li<%= sidebar_current(/^docs-config/) %>>
 				<a href="/docs/configuration/index.html">Configuration</a>
@@ -29,6 +29,10 @@
 					<a href="/docs/configuration/resources.html">Resources</a>
 					</li>
 
+					<li<%= sidebar_current("docs-config-data-sources") %>>
+					<a href="/docs/configuration/data-sources.html">Data Sources</a>
+					</li>
+
 					<li<%= sidebar_current("docs-config-providers") %>>
 					<a href="/docs/configuration/providers.html">Providers</a>
 					</li>
@@ -49,6 +53,10 @@
 					<a href="/docs/configuration/atlas.html">Atlas</a>
 					</li>
 
+					<li<%= sidebar_current("docs-config-environment-variables") %>>
+					<a href="/docs/configuration/environment-variables.html">Environment Variables</a>
+					</li>
+
 				</ul>
 				</li>
 
@@ -63,12 +71,20 @@
 					<a href="/docs/commands/destroy.html">destroy</a>
 					</li>
 
+					<li<%= sidebar_current("docs-commands-fmt") %>>
+					<a href="/docs/commands/fmt.html">fmt</a>
+					</li>
+
 					<li<%= sidebar_current("docs-commands-get") %>>
 					<a href="/docs/commands/get.html">get</a>
 					</li>
 
 					<li<%= sidebar_current("docs-commands-graph") %>>
 					<a href="/docs/commands/graph.html">graph</a>
+					</li>
+
+					<li<%= sidebar_current("docs-commands-import") %>>
+					<a href="/docs/commands/import.html">import</a>
 					</li>
 
 					<li<%= sidebar_current("docs-commands-init") %>>
@@ -81,7 +97,7 @@
 
 					<li<%= sidebar_current("docs-commands-plan") %>>
 					<a href="/docs/commands/plan.html">plan</a>
-                    </li>
+					</li>
 
 					<li<%= sidebar_current("docs-commands-push") %>>
 					<a href="/docs/commands/push.html">push</a>
@@ -89,7 +105,7 @@
 
 					<li<%= sidebar_current("docs-commands-refresh") %>>
 					<a href="/docs/commands/refresh.html">refresh</a>
-                    </li>
+					</li>
 
 					<li<%= sidebar_current("docs-commands-remote") %>>
 					<a href="/docs/commands/remote.html">remote</a>
@@ -99,46 +115,95 @@
 					<a href="/docs/commands/show.html">show</a>
 					</li>
 
+					<li<%= sidebar_current("docs-commands-state") %>>
+					<a href="/docs/commands/state/index.html">state</a>
+					</li>
+
 					<li<%= sidebar_current("docs-commands-taint") %>>
 					<a href="/docs/commands/taint.html">taint</a>
 					</li>
+
+					<li<%= sidebar_current("docs-commands-validate") %>>
+						<a href="/docs/commands/validate.html">validate</a>
+					</li>
+
+					<li<%= sidebar_current("docs-commands-untaint") %>>
+						<a href="/docs/commands/untaint.html">untaint</a>
+					</li>
 				</ul>
+				</li>
+
+				<li<%= sidebar_current(/^docs-import/) %>>
+					<a href="/docs/import/index.html">Import</a>
+					<ul class="nav">
+						<li<%= sidebar_current("docs-import-usage") %>>
+							<a href="/docs/import/usage.html">Usage</a>
+						</li>
+
+						<li<%= sidebar_current("docs-import-importability") %>>
+							<a href="/docs/import/importability.html">Resource Importability</a>
+						</li>
+					</ul>
 				</li>
 
 				<li<%= sidebar_current(/^docs-state/) %>>
 					<a href="/docs/state/index.html">State</a>
 					<ul class="nav">
+						<li<%= sidebar_current("docs-state-import") %>>
+							<a href="/docs/state/import.html">Import Existing Resources</a>
+						</li>
+
 						<li<%= sidebar_current("docs-state-remote") %>>
-							<a href="/docs/state/remote.html">Remote State</a>
+							<a href="/docs/state/remote/index.html">Remote State</a>
 						</li>
 					</ul>
 				</li>
 
 				<li<%= sidebar_current(/^docs-providers/) %>>
 				<a href="/docs/providers/index.html">Providers</a>
-                <ul class="nav">
+				<ul class="nav">
 					<li<%= sidebar_current("docs-providers-atlas") %>>
 					<a href="/docs/providers/atlas/index.html">Atlas</a>
-          </li>
+					</li>
 
 					<li<%= sidebar_current("docs-providers-aws") %>>
 					<a href="/docs/providers/aws/index.html">AWS</a>
 					</li>
 
 					<li<%= sidebar_current("docs-providers-azure") %>>
-					<a href="/docs/providers/azure/index.html">Azure</a>
+					<a href="/docs/providers/azure/index.html">Azure (Service Management)</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-azurerm") %>>
+					<a href="/docs/providers/azurerm/index.html">Azure (Resource Manager)</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-chef") %>>
+					<a href="/docs/providers/chef/index.html">Chef</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-clc") %>>
+					<a href="/docs/providers/clc/index.html">CenturyLinkCloud</a>
 					</li>
 
 					<li<%= sidebar_current("docs-providers-cloudflare") %>>
 					<a href="/docs/providers/cloudflare/index.html">CloudFlare</a>
-          </li>
+					</li>
 
-          <li<%= sidebar_current("docs-providers-cloudstack") %>>
+					<li<%= sidebar_current("docs-providers-cloudstack") %>>
 					<a href="/docs/providers/cloudstack/index.html">CloudStack</a>
-          </li>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-cobbler") %>>
+					<a href="/docs/providers/cobbler/index.html">Cobbler</a>
+					</li>
 
 					<li<%= sidebar_current("docs-providers-consul") %>>
 					<a href="/docs/providers/consul/index.html">Consul</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-datadog") %>>
+						<a href="/docs/providers/datadog/index.html">Datadog</a>
 					</li>
 
 					<li<%= sidebar_current("docs-providers-do") %>>
@@ -157,24 +222,100 @@
 					<a href="/docs/providers/docker/index.html">Docker</a>
 					</li>
 
+					<li<%= sidebar_current("docs-providers-dyn") %>>
+					<a href="/docs/providers/dyn/index.html">Dyn</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-github") %>>
+					<a href="/docs/providers/github/index.html">GitHub</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-fastly") %>>
+					<a href="/docs/providers/fastly/index.html">Fastly</a>
+					</li>
+
 					<li<%= sidebar_current("docs-providers-google") %>>
 					<a href="/docs/providers/google/index.html">Google Cloud</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-grafana") %>>
+					<a href="/docs/providers/grafana/index.html">Grafana</a>
 					</li>
 
 					<li<%= sidebar_current("docs-providers-heroku") %>>
 					<a href="/docs/providers/heroku/index.html">Heroku</a>
 					</li>
 
+					<li<%= sidebar_current("docs-providers-influxdb") %>>
+					<a href="/docs/providers/influxdb/index.html">InfluxDB</a>
+                    </li>
+
+					<li<%= sidebar_current("docs-providers-librato") %>>
+					<a href="/docs/providers/librato/index.html">Librato</a>
+					</li>
+
 					<li<%= sidebar_current("docs-providers-mailgun") %>>
 					<a href="/docs/providers/mailgun/index.html">Mailgun</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-mysql") %>>
+					<a href="/docs/providers/mysql/index.html">MySQL</a>
 					</li>
 
 					<li<%= sidebar_current("docs-providers-openstack") %>>
 					<a href="/docs/providers/openstack/index.html">OpenStack</a>
 					</li>
 
+					<li<%= sidebar_current("docs-providers-packet") %>>
+					<a href="/docs/providers/packet/index.html">Packet</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-postgresql") %>>
+					<a href="/docs/providers/postgresql/index.html">PostgreSQL</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-powerdns") %>>
+                    <a href="/docs/providers/powerdns/index.html">PowerDNS</a>
+                    </li>
+
+					<li<%= sidebar_current("docs-providers-rundeck") %>>
+					<a href="/docs/providers/rundeck/index.html">Rundeck</a>
+					</li>
+
+                    <li<%= sidebar_current("docs-providers-statuscake") %>>
+                        <a href="/docs/providers/statuscake/index.html">StatusCake</a>
+                    </li>
+
+					<li<%= sidebar_current("docs-providers-softlayer") %>>
+					<a href="/docs/providers/softlayer/index.html">SoftLayer</a>
+					</li>
+
 					<li<%= sidebar_current("docs-providers-template") %>>
 					<a href="/docs/providers/template/index.html">Template</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-terraform") %>>
+					<a href="/docs/providers/terraform/index.html">Terraform</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-tls") %>>
+					<a href="/docs/providers/tls/index.html">TLS</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-triton") %>>
+					<a href="/docs/providers/triton/index.html">Triton</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-ultradns") %>>
+					<a href="/docs/providers/ultradns/index.html">UltraDNS</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-vcd") %>>
+					<a href="/docs/providers/vcd/index.html">VMware vCloud Director</a>
+					</li>
+
+					<li<%= sidebar_current("docs-providers-vsphere") %>>
+					<a href="/docs/providers/vsphere/index.html">VMware vSphere</a>
 					</li>
 				</ul>
 				</li>
@@ -200,6 +341,10 @@
 
 					<li<%= sidebar_current("docs-provisioners-remote") %>>
 					<a href="/docs/provisioners/remote-exec.html">remote-exec</a>
+					</li>
+
+					<li<%= sidebar_current("docs-provisioners-null-resource") %>>
+					<a href="/docs/provisioners/null_resource.html">null_resource</a>
 					</li>
 				</ul>
 				</li>
@@ -231,6 +376,10 @@
 					<li<%= sidebar_current("docs-plugins-provider") %>>
 					<a href="/docs/plugins/provider.html">Provider</a>
 					</li>
+
+					<li<%= sidebar_current("docs-internals-plugins") %>>
+					<a href="/docs/internals/internal-plugins.html">Internals</a>
+					</li>
 				</ul>
 				</li>
 
@@ -251,6 +400,10 @@
 
 					<li<%= sidebar_current("docs-internals-resource-addressing") %>>
 					<a href="/docs/internals/resource-addressing.html">Resource Addressing</a>
+					</li>
+
+					<li<%= sidebar_current("docs-internals-plugins") %>>
+					<a href="/docs/internals/internal-plugins.html">Internal Plugins</a>
 					</li>
 				</ul>
 				</li>

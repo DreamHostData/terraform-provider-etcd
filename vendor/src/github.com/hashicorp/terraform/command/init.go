@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/terraform"
@@ -29,6 +31,8 @@ func (c *InitCommand) Run(args []string) int {
 		return 1
 	}
 
+	remoteBackend = strings.ToLower(remoteBackend)
+
 	var path string
 	args = cmdFlags.Args()
 	if len(args) > 2 {
@@ -50,6 +54,11 @@ func (c *InitCommand) Run(args []string) int {
 			c.Ui.Error(fmt.Sprintf("Error getting pwd: %s", err))
 		}
 	}
+
+	// Set the state out path to be the path requested for the module
+	// to be copied. This ensures any remote states gets setup in the
+	// proper directory.
+	c.Meta.dataDir = filepath.Join(path, DefaultDataDirectory)
 
 	source := args[0]
 
@@ -75,7 +84,7 @@ func (c *InitCommand) Run(args []string) int {
 	}
 
 	// Detect
-	source, err = module.Detect(source, pwd)
+	source, err = getter.Detect(source, pwd, getter.Detectors)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf(
 			"Error with module source: %s", err))
@@ -148,6 +157,8 @@ Options:
 
   -backend-config="k=v"  Specifies configuration for the remote storage
                          backend. This can be specified multiple times.
+
+  -no-color           If specified, output won't contain any color.
 
 `
 	return strings.TrimSpace(helpText)

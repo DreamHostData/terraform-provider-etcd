@@ -2,6 +2,7 @@ package terraform
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/hashicorp/errwrap"
@@ -26,7 +27,7 @@ type ContextGraphWalker struct {
 	once                sync.Once
 	contexts            map[string]*BuiltinEvalContext
 	contextLock         sync.Mutex
-	interpolaterVars    map[string]map[string]string
+	interpolaterVars    map[string]map[string]interface{}
 	interpolaterVarLock sync.Mutex
 	providerCache       map[string]ResourceProvider
 	providerConfigCache map[string]*ResourceConfig
@@ -48,7 +49,7 @@ func (w *ContextGraphWalker) EnterPath(path []string) EvalContext {
 	}
 
 	// Setup the variables for this interpolater
-	variables := make(map[string]string)
+	variables := make(map[string]interface{})
 	if len(path) <= 1 {
 		for k, v := range w.Context.variables {
 			variables[k] = v
@@ -80,11 +81,12 @@ func (w *ContextGraphWalker) EnterPath(path []string) EvalContext {
 		StateValue:          w.Context.state,
 		StateLock:           &w.Context.stateLock,
 		Interpolater: &Interpolater{
-			Operation: w.Operation,
-			Module:    w.Context.module,
-			State:     w.Context.state,
-			StateLock: &w.Context.stateLock,
-			Variables: variables,
+			Operation:          w.Operation,
+			Module:             w.Context.module,
+			State:              w.Context.state,
+			StateLock:          &w.Context.stateLock,
+			VariableValues:     variables,
+			VariableValuesLock: &w.interpolaterVarLock,
 		},
 		InterpolaterVars:    w.interpolaterVars,
 		InterpolaterVarLock: &w.interpolaterVarLock,
@@ -95,6 +97,9 @@ func (w *ContextGraphWalker) EnterPath(path []string) EvalContext {
 }
 
 func (w *ContextGraphWalker) EnterEvalTree(v dag.Vertex, n EvalNode) EvalNode {
+	log.Printf("[TRACE] [%s] Entering eval tree: %s",
+		w.Operation, dag.VertexName(v))
+
 	// Acquire a lock on the semaphore
 	w.Context.parallelSem.Acquire()
 
@@ -105,6 +110,9 @@ func (w *ContextGraphWalker) EnterEvalTree(v dag.Vertex, n EvalNode) EvalNode {
 
 func (w *ContextGraphWalker) ExitEvalTree(
 	v dag.Vertex, output interface{}, err error) error {
+	log.Printf("[TRACE] [%s] Exiting eval tree: %s",
+		w.Operation, dag.VertexName(v))
+
 	// Release the semaphore
 	w.Context.parallelSem.Release()
 
@@ -142,5 +150,5 @@ func (w *ContextGraphWalker) init() {
 	w.providerCache = make(map[string]ResourceProvider, 5)
 	w.providerConfigCache = make(map[string]*ResourceConfig, 5)
 	w.provisionerCache = make(map[string]ResourceProvisioner, 5)
-	w.interpolaterVars = make(map[string]map[string]string, 5)
+	w.interpolaterVars = make(map[string]map[string]interface{}, 5)
 }

@@ -64,14 +64,18 @@ provisioner "file" {
 * `timeout` - The timeout to wait for the connection to become available. This defaults
   to 5 minutes. Should be provided as a string like "30s" or "5m".
 
-* `script_path` - The path used to copy scripts to meant for remote execution.
+* `script_path` - The path used to copy scripts meant for remote execution.
 
 **Additional arguments only supported by the "ssh" connection type:**
 
-* `key_file` - The SSH key to use for the connection. This takes preference over the
-  password if provided.
+* `private_key` - The contents of an SSH key to use for the connection. These can
+  be loaded from a file on disk using the [`file()` interpolation
+  function](/docs/configuration/interpolation.html#file_path_). This takes
+  preference over the password if provided.
 
-* `agent` - Set to true to enable using ssh-agent to authenticate.
+* `agent` - Set to false to disable using ssh-agent to authenticate. On Windows the
+  only supported SSH authentication agent is
+  [Pageant](http://the.earth.li/~sgtatham/putty/0.66/htmldoc/Chapter9.html#pageant)
 
 **Additional arguments only supported by the "winrm" connection type:**
 
@@ -80,3 +84,41 @@ provisioner "file" {
 * `insecure` - Set to true to not validate the HTTPS certificate chain.
 
 * `cacert` - The CA certificate to validate against.
+
+<a id="bastion"></a>
+## Connecting through a Bastion Host with SSH
+
+The `ssh` connection additionally supports the following fields to facilitate a
+[bastion host](https://en.wikipedia.org/wiki/Bastion_host) connection.
+
+* `bastion_host` - Setting this enables the bastion Host connection. This host
+  will be connected to first, and the `host` connection will be made from there.
+
+* `bastion_port` - The port to use connect to the bastion host. Defaults to the
+  value of `port`.
+
+* `bastion_user` - The user to use to connect to the bastion host. Defaults to
+  the value of `user`.
+
+* `bastion_password` - The password we should use for the bastion host.
+  Defaults to the value of `password`.
+
+* `bastion_private_key` - The contents of an SSH key file to use for the bastion
+  host. These can be loaded from a file on disk using the [`file()`
+  interpolation function](/docs/configuration/interpolation.html#file_path_).
+  Defaults to the value of `private_key`.
+
+## Deprecations
+
+These are supported for backwards compatibility and may be removed in a
+future version:
+
+* `key_file` - A path to or the contents of an SSH key to use for the
+  connection. These can be loaded from a file on disk using the [`file()`
+  interpolation function](/docs/configuration/interpolation.html#file_path_).
+  This takes preference over the password if provided.
+
+* `bastion_key_file` - The contents of an SSH key file to use for the bastion
+  host. These can be loaded from a file on disk using the [`file()`
+  interpolation function](/docs/configuration/interpolation.html#file_path_).
+  Defaults to the value of `key_file`.

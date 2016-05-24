@@ -1,6 +1,8 @@
 package aws
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -8,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform/helper/schema"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
@@ -66,10 +69,24 @@ func resourceAwsSqsQueue() *schema.Resource {
 			"policy": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				StateFunc: func(v interface{}) string {
+					s, ok := v.(string)
+					if !ok || s == "" {
+						return ""
+					}
+					jsonb := []byte(s)
+					buffer := new(bytes.Buffer)
+					if err := json.Compact(buffer, jsonb); err != nil {
+						log.Printf("[WARN] Error compacting JSON for Policy in SNS Queue")
+						return ""
+					}
+					return buffer.String()
+				},
 			},
 			"redrive_policy": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
+				Type:      schema.TypeString,
+				Optional:  true,
+				StateFunc: normalizeJson,
 			},
 			"arn": &schema.Schema{
 				Type:     schema.TypeString,
@@ -116,7 +133,7 @@ func resourceAwsSqsQueueCreate(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("Error creating SQS queue: %s", err)
 	}
 
-	d.SetId(*output.QueueURL)
+	d.SetId(*output.QueueUrl)
 
 	return resourceAwsSqsQueueUpdate(d, meta)
 }
@@ -143,7 +160,7 @@ func resourceAwsSqsQueueUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	if len(attributes) > 0 {
 		req := &sqs.SetQueueAttributesInput{
-			QueueURL:   aws.String(d.Id()),
+			QueueUrl:   aws.String(d.Id()),
 			Attributes: attributes,
 		}
 		sqsconn.SetQueueAttributes(req)
@@ -156,11 +173,19 @@ func resourceAwsSqsQueueRead(d *schema.ResourceData, meta interface{}) error {
 	sqsconn := meta.(*AWSClient).sqsconn
 
 	attributeOutput, err := sqsconn.GetQueueAttributes(&sqs.GetQueueAttributesInput{
-		QueueURL:       aws.String(d.Id()),
+		QueueUrl:       aws.String(d.Id()),
 		AttributeNames: []*string{aws.String("All")},
 	})
 
 	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok {
+			log.Printf("ERROR Found %s", awsErr.Code())
+			if "AWS.SimpleQueueService.NonExistentQueue" == awsErr.Code() {
+				d.SetId("")
+				log.Printf("[DEBUG] SQS Queue (%s) not found", d.Get("name").(string))
+				return nil
+			}
+		}
 		return err
 	}
 
@@ -176,7 +201,9 @@ func resourceAwsSqsQueueRead(d *schema.ResourceData, meta interface{}) error {
 						return err
 					}
 					d.Set(iKey, value)
+					log.Printf("[DEBUG] Reading %s => %s -> %d", iKey, oKey, value)
 				} else {
+					log.Printf("[DEBUG] Reading %s => %s -> %s", iKey, oKey, *attrmap[oKey])
 					d.Set(iKey, *attrmap[oKey])
 				}
 			}
@@ -191,7 +218,7 @@ func resourceAwsSqsQueueDelete(d *schema.ResourceData, meta interface{}) error {
 
 	log.Printf("[DEBUG] SQS Delete Queue: %s", d.Id())
 	_, err := sqsconn.DeleteQueue(&sqs.DeleteQueueInput{
-		QueueURL: aws.String(d.Id()),
+		QueueUrl: aws.String(d.Id()),
 	})
 	if err != nil {
 		return err

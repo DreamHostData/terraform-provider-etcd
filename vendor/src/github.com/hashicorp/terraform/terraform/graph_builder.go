@@ -32,7 +32,7 @@ func (b *BasicGraphBuilder) Build(path []string) (*Graph, error) {
 
 		log.Printf(
 			"[TRACE] Graph after step %T:\n\n%s",
-			step, g.String())
+			step, g.StringWithNodeTypes())
 	}
 
 	// Validate the graph structure
@@ -105,9 +105,8 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 		// Create all our resources from the configuration and state
 		&ConfigTransformer{Module: b.Root},
 		&OrphanTransformer{
-			State:     b.State,
-			Module:    b.Root,
-			Targeting: (len(b.Targets) > 0),
+			State:  b.State,
+			Module: b.Root,
 		},
 
 		// Output-related transformations
@@ -116,13 +115,11 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 		// Provider-related transformations
 		&MissingProviderTransformer{Providers: b.Providers},
 		&ProviderTransformer{},
-		&PruneProviderTransformer{},
 		&DisableProviderTransformer{},
 
 		// Provisioner-related transformations
 		&MissingProvisionerTransformer{Provisioners: b.Provisioners},
 		&ProvisionerTransformer{},
-		&PruneProvisionerTransformer{},
 
 		// Run our vertex-level transforms
 		&VertexTransformer{
@@ -139,37 +136,46 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 
 		// Make sure all the connections that are proxies are connected through
 		&ProxyTransformer{},
-
-		// Optionally reduces the graph to a user-specified list of targets and
-		// their dependencies.
-		&TargetsTransformer{Targets: b.Targets, Destroy: b.Destroy},
-
-		// Make sure we have a single root
-		&RootTransformer{},
 	}
 
 	// If we're on the root path, then we do a bunch of other stuff.
 	// We don't do the following for modules.
 	if len(path) <= 1 {
 		steps = append(steps,
+			// Optionally reduces the graph to a user-specified list of targets and
+			// their dependencies.
+			&TargetsTransformer{Targets: b.Targets, Destroy: b.Destroy},
+
+			// Prune the providers. This must happen only once because flattened
+			// modules might depend on empty providers.
+			&PruneProviderTransformer{},
+
 			// Create the destruction nodes
 			&DestroyTransformer{FullDestroy: b.Destroy},
-			&CreateBeforeDestroyTransformer{},
+			b.conditional(&conditionalOpts{
+				If:   func() bool { return !b.Destroy },
+				Then: &CreateBeforeDestroyTransformer{},
+			}),
 			b.conditional(&conditionalOpts{
 				If:   func() bool { return !b.Verbose },
 				Then: &PruneDestroyTransformer{Diff: b.Diff, State: b.State},
 			}),
 
-			// Make sure we have a single root after the above changes.
-			// This is the 2nd root transformer. In practice this shouldn't
-			// actually matter as the RootTransformer is idempotent.
-			&RootTransformer{},
+			// Remove the noop nodes
+			&PruneNoopTransformer{Diff: b.Diff, State: b.State},
+
+			// Insert nodes to close opened plugin connections
+			&CloseProviderTransformer{},
+			&CloseProvisionerTransformer{},
 
 			// Perform the transitive reduction to make our graph a bit
 			// more sane if possible (it usually is possible).
 			&TransitiveReductionTransformer{},
 		)
 	}
+
+	// Make sure we have a single root
+	steps = append(steps, &RootTransformer{})
 
 	// Remove nils
 	for i, s := range steps {

@@ -7,29 +7,220 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/terraform/config/lang"
-	"github.com/hashicorp/terraform/config/lang/ast"
+	"github.com/hashicorp/hil"
+	"github.com/hashicorp/hil/ast"
 )
+
+func TestInterpolateFuncCompact(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			// empty string within array
+			{
+				`${compact(split(",", "a,,b"))}`,
+				[]interface{}{"a", "b"},
+				false,
+			},
+
+			// empty string at the end of array
+			{
+				`${compact(split(",", "a,b,"))}`,
+				[]interface{}{"a", "b"},
+				false,
+			},
+
+			// single empty string
+			{
+				`${compact(split(",", ""))}`,
+				[]interface{}{},
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncCidrHost(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${cidrhost("192.168.1.0/24", 5)}`,
+				"192.168.1.5",
+				false,
+			},
+			{
+				`${cidrhost("192.168.1.0/30", 255)}`,
+				nil,
+				true, // 255 doesn't fit in two bits
+			},
+			{
+				`${cidrhost("not-a-cidr", 6)}`,
+				nil,
+				true, // not a valid CIDR mask
+			},
+			{
+				`${cidrhost("10.256.0.0/8", 6)}`,
+				nil,
+				true, // can't have an octet >255
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncCidrNetmask(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${cidrnetmask("192.168.1.0/24")}`,
+				"255.255.255.0",
+				false,
+			},
+			{
+				`${cidrnetmask("192.168.1.0/32")}`,
+				"255.255.255.255",
+				false,
+			},
+			{
+				`${cidrnetmask("0.0.0.0/0")}`,
+				"0.0.0.0",
+				false,
+			},
+			{
+				// This doesn't really make sense for IPv6 networks
+				// but it ought to do something sensible anyway.
+				`${cidrnetmask("1::/64")}`,
+				"ffff:ffff:ffff:ffff::",
+				false,
+			},
+			{
+				`${cidrnetmask("not-a-cidr")}`,
+				nil,
+				true, // not a valid CIDR mask
+			},
+			{
+				`${cidrnetmask("10.256.0.0/8")}`,
+				nil,
+				true, // can't have an octet >255
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncCidrSubnet(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${cidrsubnet("192.168.2.0/20", 4, 6)}`,
+				"192.168.6.0/24",
+				false,
+			},
+			{
+				`${cidrsubnet("fe80::/48", 16, 6)}`,
+				"fe80:0:0:6::/64",
+				false,
+			},
+			{
+				// IPv4 address encoded in IPv6 syntax gets normalized
+				`${cidrsubnet("::ffff:192.168.0.0/112", 8, 6)}`,
+				"192.168.6.0/24",
+				false,
+			},
+			{
+				`${cidrsubnet("192.168.0.0/30", 4, 6)}`,
+				nil,
+				true, // not enough bits left
+			},
+			{
+				`${cidrsubnet("192.168.0.0/16", 2, 16)}`,
+				nil,
+				true, // can't encode 16 in 2 bits
+			},
+			{
+				`${cidrsubnet("not-a-cidr", 4, 6)}`,
+				nil,
+				true, // not a valid CIDR mask
+			},
+			{
+				`${cidrsubnet("10.256.0.0/8", 4, 6)}`,
+				nil,
+				true, // can't have an octet >255
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncCoalesce(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${coalesce("first", "second", "third")}`,
+				"first",
+				false,
+			},
+			{
+				`${coalesce("", "second", "third")}`,
+				"second",
+				false,
+			},
+			{
+				`${coalesce("", "", "")}`,
+				"",
+				false,
+			},
+			{
+				`${coalesce("foo")}`,
+				nil,
+				true,
+			},
+		},
+	})
+}
 
 func TestInterpolateFuncConcat(t *testing.T) {
 	testFunction(t, testFunctionConfig{
 		Cases: []testFunctionCase{
+			// String + list
 			{
-				`${concat("foo", "bar")}`,
-				"foobar",
+				`${concat("a", split(",", "b,c"))}`,
+				[]interface{}{"a", "b", "c"},
 				false,
 			},
 
+			// List + string
 			{
-				`${concat("foo")}`,
-				"foo",
+				`${concat(split(",", "a,b"), "c")}`,
+				[]interface{}{"a", "b", "c"},
 				false,
 			},
 
+			// Single list
 			{
-				`${concat()}`,
-				nil,
-				true,
+				`${concat(split(",", ",foo,"))}`,
+				[]interface{}{"", "foo", ""},
+				false,
+			},
+			{
+				`${concat(split(",", "a,b,c"))}`,
+				[]interface{}{"a", "b", "c"},
+				false,
+			},
+
+			// Two lists
+			{
+				`${concat(split(",", "a,b,c"), split(",", "d,e"))}`,
+				[]interface{}{"a", "b", "c", "d", "e"},
+				false,
+			},
+			// Two lists with different separators
+			{
+				`${concat(split(",", "a,b,c"), split(" ", "d e"))}`,
+				[]interface{}{"a", "b", "c", "d", "e"},
+				false,
+			},
+
+			// More lists
+			{
+				`${concat(split(",", "a,b"), split(",", "c,d"), split(",", "e,f"), split(",", "0,1"))}`,
+				[]interface{}{"a", "b", "c", "d", "e", "f", "0", "1"},
+				false,
 			},
 		},
 	})
@@ -123,7 +314,7 @@ func TestInterpolateFuncFormatList(t *testing.T) {
 			// formatlist applies to each list element in turn
 			{
 				`${formatlist("<%s>", split(",", "A,B"))}`,
-				"<A>" + InterpSplitDelim + "<B>",
+				[]interface{}{"<A>", "<B>"},
 				false,
 			},
 			// formatlist repeats scalar elements
@@ -138,22 +329,52 @@ func TestInterpolateFuncFormatList(t *testing.T) {
 				"A=1, B=2, C=3",
 				false,
 			},
-			// formatlist of lists of length zero/one are repeated, just as scalars are
-			{
-				`${join(", ", formatlist("%s=%s", split(",", ""), split(",", "1,2,3")))}`,
-				"=1, =2, =3",
-				false,
-			},
-			{
-				`${join(", ", formatlist("%s=%s", split(",", "A"), split(",", "1,2,3")))}`,
-				"A=1, A=2, A=3",
-				false,
-			},
 			// Mismatched list lengths generate an error
 			{
 				`${formatlist("%s=%2s", split(",", "A,B,C,D"), split(",", "1,2,3"))}`,
 				nil,
 				true,
+			},
+			// Works with lists of length 1 [GH-2240]
+			{
+				`${formatlist("%s.id", split(",", "demo-rest-elb"))}`,
+				[]interface{}{"demo-rest-elb.id"},
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncIndex(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Vars: map[string]ast.Variable{
+			"var.list1": interfaceToVariableSwallowError([]string{"notfoo", "stillnotfoo", "bar"}),
+			"var.list2": interfaceToVariableSwallowError([]string{"foo"}),
+			"var.list3": interfaceToVariableSwallowError([]string{"foo", "spam", "bar", "eggs"}),
+		},
+		Cases: []testFunctionCase{
+			{
+				`${index("test", "")}`,
+				nil,
+				true,
+			},
+
+			{
+				`${index(var.list1, "foo")}`,
+				nil,
+				true,
+			},
+
+			{
+				`${index(var.list2, "foo")}`,
+				"0",
+				false,
+			},
+
+			{
+				`${index(var.list3, "bar")}`,
+				"2",
+				false,
 			},
 		},
 	})
@@ -161,6 +382,10 @@ func TestInterpolateFuncFormatList(t *testing.T) {
 
 func TestInterpolateFuncJoin(t *testing.T) {
 	testFunction(t, testFunctionConfig{
+		Vars: map[string]ast.Variable{
+			"var.a_list":        interfaceToVariableSwallowError([]string{"foo"}),
+			"var.a_longer_list": interfaceToVariableSwallowError([]string{"foo", "bar", "baz"}),
+		},
 		Cases: []testFunctionCase{
 			{
 				`${join(",")}`,
@@ -169,28 +394,103 @@ func TestInterpolateFuncJoin(t *testing.T) {
 			},
 
 			{
-				`${join(",", "foo")}`,
+				`${join(",", var.a_list)}`,
 				"foo",
 				false,
 			},
 
-			/*
-				TODO
-				{
-					`${join(",", "foo", "bar")}`,
-					"foo,bar",
-					false,
-				},
-			*/
-
 			{
-				fmt.Sprintf(`${join(".", "%s")}`,
-					fmt.Sprintf(
-						"foo%sbar%sbaz",
-						InterpSplitDelim,
-						InterpSplitDelim)),
+				`${join(".", var.a_longer_list)}`,
 				"foo.bar.baz",
 				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncJSONEncode(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Vars: map[string]ast.Variable{
+			"easy": ast.Variable{
+				Value: "test",
+				Type:  ast.TypeString,
+			},
+			"hard": ast.Variable{
+				Value: " foo \\ \n \t \" bar ",
+				Type:  ast.TypeString,
+			},
+			"list": interfaceToVariableSwallowError([]string{"foo", "bar\tbaz"}),
+			// XXX can't use InterfaceToVariable as it converts empty slice into empty
+			// map.
+			"emptylist": ast.Variable{
+				Value: []ast.Variable{},
+				Type:  ast.TypeList,
+			},
+			"map": interfaceToVariableSwallowError(map[string]string{
+				"foo":     "bar",
+				"ba \n z": "q\\x",
+			}),
+			"emptymap": interfaceToVariableSwallowError(map[string]string{}),
+
+			// Not yet supported (but it would be nice)
+			"nestedlist": interfaceToVariableSwallowError([][]string{{"foo"}}),
+			"nestedmap":  interfaceToVariableSwallowError(map[string][]string{"foo": {"bar"}}),
+		},
+		Cases: []testFunctionCase{
+			{
+				`${jsonencode("test")}`,
+				`"test"`,
+				false,
+			},
+			{
+				`${jsonencode(easy)}`,
+				`"test"`,
+				false,
+			},
+			{
+				`${jsonencode(hard)}`,
+				`" foo \\ \n \t \" bar "`,
+				false,
+			},
+			{
+				`${jsonencode("")}`,
+				`""`,
+				false,
+			},
+			{
+				`${jsonencode()}`,
+				nil,
+				true,
+			},
+			{
+				`${jsonencode(list)}`,
+				`["foo","bar\tbaz"]`,
+				false,
+			},
+			{
+				`${jsonencode(emptylist)}`,
+				`[]`,
+				false,
+			},
+			{
+				`${jsonencode(map)}`,
+				`{"ba \n z":"q\\x","foo":"bar"}`,
+				false,
+			},
+			{
+				`${jsonencode(emptymap)}`,
+				`{}`,
+				false,
+			},
+			{
+				`${jsonencode(nestedlist)}`,
+				nil,
+				true,
+			},
+			{
+				`${jsonencode(nestedmap)}`,
+				nil,
+				true,
 			},
 		},
 	})
@@ -292,6 +592,48 @@ func TestInterpolateFuncLength(t *testing.T) {
 				"5",
 				false,
 			},
+			// Want length 0 if we split an empty string then compact
+			{
+				`${length(compact(split(",", "")))}`,
+				"0",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncSignum(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${signum()}`,
+				nil,
+				true,
+			},
+
+			{
+				`${signum("")}`,
+				nil,
+				true,
+			},
+
+			{
+				`${signum(0)}`,
+				"0",
+				false,
+			},
+
+			{
+				`${signum(15)}`,
+				"1",
+				false,
+			},
+
+			{
+				`${signum(-29)}`,
+				"-1",
+				false,
+			},
 		},
 	})
 }
@@ -306,46 +648,38 @@ func TestInterpolateFuncSplit(t *testing.T) {
 			},
 
 			{
+				`${split(",", "")}`,
+				[]interface{}{""},
+				false,
+			},
+
+			{
 				`${split(",", "foo")}`,
-				"foo",
+				[]interface{}{"foo"},
 				false,
 			},
 
 			{
 				`${split(",", ",,,")}`,
-				fmt.Sprintf(
-					"%s%s%s",
-					InterpSplitDelim,
-					InterpSplitDelim,
-					InterpSplitDelim),
+				[]interface{}{"", "", "", ""},
 				false,
 			},
 
 			{
 				`${split(",", "foo,")}`,
-				fmt.Sprintf(
-					"%s%s",
-					"foo",
-					InterpSplitDelim),
+				[]interface{}{"foo", ""},
 				false,
 			},
 
 			{
 				`${split(",", ",foo,")}`,
-				fmt.Sprintf(
-					"%s%s%s",
-					InterpSplitDelim,
-					"foo",
-					InterpSplitDelim),
+				[]interface{}{"", "foo", ""},
 				false,
 			},
 
 			{
 				`${split(".", "foo.bar.baz")}`,
-				fmt.Sprintf(
-					"foo%sbar%sbaz",
-					InterpSplitDelim,
-					InterpSplitDelim),
+				[]interface{}{"foo", "bar", "baz"},
 				false,
 			},
 		},
@@ -355,28 +689,33 @@ func TestInterpolateFuncSplit(t *testing.T) {
 func TestInterpolateFuncLookup(t *testing.T) {
 	testFunction(t, testFunctionConfig{
 		Vars: map[string]ast.Variable{
-			"var.foo.bar": ast.Variable{
-				Value: "baz",
-				Type:  ast.TypeString,
+			"var.foo": ast.Variable{
+				Type: ast.TypeMap,
+				Value: map[string]ast.Variable{
+					"bar": ast.Variable{
+						Type:  ast.TypeString,
+						Value: "baz",
+					},
+				},
 			},
 		},
 		Cases: []testFunctionCase{
 			{
-				`${lookup("foo", "bar")}`,
+				`${lookup(var.foo, "bar")}`,
 				"baz",
 				false,
 			},
 
 			// Invalid key
 			{
-				`${lookup("foo", "baz")}`,
+				`${lookup(var.foo, "baz")}`,
 				nil,
 				true,
 			},
 
 			// Too many args
 			{
-				`${lookup("foo", "bar", "baz")}`,
+				`${lookup(var.foo, "bar", "baz")}`,
 				nil,
 				true,
 			},
@@ -387,13 +726,18 @@ func TestInterpolateFuncLookup(t *testing.T) {
 func TestInterpolateFuncKeys(t *testing.T) {
 	testFunction(t, testFunctionConfig{
 		Vars: map[string]ast.Variable{
-			"var.foo.bar": ast.Variable{
-				Value: "baz",
-				Type:  ast.TypeString,
-			},
-			"var.foo.qux": ast.Variable{
-				Value: "quack",
-				Type:  ast.TypeString,
+			"var.foo": ast.Variable{
+				Type: ast.TypeMap,
+				Value: map[string]ast.Variable{
+					"bar": ast.Variable{
+						Value: "baz",
+						Type:  ast.TypeString,
+					},
+					"qux": ast.Variable{
+						Value: "quack",
+						Type:  ast.TypeString,
+					},
+				},
 			},
 			"var.str": ast.Variable{
 				Value: "astring",
@@ -402,30 +746,28 @@ func TestInterpolateFuncKeys(t *testing.T) {
 		},
 		Cases: []testFunctionCase{
 			{
-				`${keys("foo")}`,
-				fmt.Sprintf(
-					"bar%squx",
-					InterpSplitDelim),
+				`${keys(var.foo)}`,
+				[]interface{}{"bar", "qux"},
 				false,
 			},
 
 			// Invalid key
 			{
-				`${keys("not")}`,
+				`${keys(var.not)}`,
 				nil,
 				true,
 			},
 
 			// Too many args
 			{
-				`${keys("foo", "bar")}`,
+				`${keys(var.foo, "bar")}`,
 				nil,
 				true,
 			},
 
 			// Not a map
 			{
-				`${keys("str")}`,
+				`${keys(var.str)}`,
 				nil,
 				true,
 			},
@@ -436,13 +778,18 @@ func TestInterpolateFuncKeys(t *testing.T) {
 func TestInterpolateFuncValues(t *testing.T) {
 	testFunction(t, testFunctionConfig{
 		Vars: map[string]ast.Variable{
-			"var.foo.bar": ast.Variable{
-				Value: "quack",
-				Type:  ast.TypeString,
-			},
-			"var.foo.qux": ast.Variable{
-				Value: "baz",
-				Type:  ast.TypeString,
+			"var.foo": ast.Variable{
+				Type: ast.TypeMap,
+				Value: map[string]ast.Variable{
+					"bar": ast.Variable{
+						Value: "quack",
+						Type:  ast.TypeString,
+					},
+					"qux": ast.Variable{
+						Value: "baz",
+						Type:  ast.TypeString,
+					},
+				},
 			},
 			"var.str": ast.Variable{
 				Value: "astring",
@@ -451,30 +798,28 @@ func TestInterpolateFuncValues(t *testing.T) {
 		},
 		Cases: []testFunctionCase{
 			{
-				`${values("foo")}`,
-				fmt.Sprintf(
-					"quack%sbaz",
-					InterpSplitDelim),
+				`${values(var.foo)}`,
+				[]interface{}{"quack", "baz"},
 				false,
 			},
 
 			// Invalid key
 			{
-				`${values("not")}`,
+				`${values(var.not)}`,
 				nil,
 				true,
 			},
 
 			// Too many args
 			{
-				`${values("foo", "bar")}`,
+				`${values(var.foo, "bar")}`,
 				nil,
 				true,
 			},
 
 			// Not a map
 			{
-				`${values("str")}`,
+				`${values(var.str)}`,
 				nil,
 				true,
 			},
@@ -482,39 +827,230 @@ func TestInterpolateFuncValues(t *testing.T) {
 	})
 }
 
+func interfaceToVariableSwallowError(input interface{}) ast.Variable {
+	variable, _ := hil.InterfaceToVariable(input)
+	return variable
+}
+
 func TestInterpolateFuncElement(t *testing.T) {
 	testFunction(t, testFunctionConfig{
+		Vars: map[string]ast.Variable{
+			"var.a_list":       interfaceToVariableSwallowError([]string{"foo", "baz"}),
+			"var.a_short_list": interfaceToVariableSwallowError([]string{"foo"}),
+		},
 		Cases: []testFunctionCase{
 			{
-				fmt.Sprintf(`${element("%s", "1")}`,
-					"foo"+InterpSplitDelim+"baz"),
+				`${element(var.a_list, "1")}`,
 				"baz",
 				false,
 			},
 
 			{
-				`${element("foo", "0")}`,
+				`${element(var.a_short_list, "0")}`,
 				"foo",
 				false,
 			},
 
 			// Invalid index should wrap vs. out-of-bounds
 			{
-				fmt.Sprintf(`${element("%s", "2")}`,
-					"foo"+InterpSplitDelim+"baz"),
+				`${element(var.a_list, "2")}`,
 				"foo",
 				false,
 			},
 
+			// Negative number should fail
+			{
+				`${element(var.a_short_list, "-1")}`,
+				nil,
+				true,
+			},
+
 			// Too many args
 			{
-				fmt.Sprintf(`${element("%s", "0", "2")}`,
-					"foo"+InterpSplitDelim+"baz"),
+				`${element(var.a_list, "0", "2")}`,
 				nil,
 				true,
 			},
 		},
 	})
+}
+
+func TestInterpolateFuncBase64Encode(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			// Regular base64 encoding
+			{
+				`${base64encode("abc123!?$*&()'-=@~")}`,
+				"YWJjMTIzIT8kKiYoKSctPUB+",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncBase64Decode(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			// Regular base64 decoding
+			{
+				`${base64decode("YWJjMTIzIT8kKiYoKSctPUB+")}`,
+				"abc123!?$*&()'-=@~",
+				false,
+			},
+
+			// Invalid base64 data decoding
+			{
+				`${base64decode("this-is-an-invalid-base64-data")}`,
+				nil,
+				true,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncLower(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${lower("HELLO")}`,
+				"hello",
+				false,
+			},
+
+			{
+				`${lower("")}`,
+				"",
+				false,
+			},
+
+			{
+				`${lower()}`,
+				nil,
+				true,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncUpper(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${upper("hello")}`,
+				"HELLO",
+				false,
+			},
+
+			{
+				`${upper("")}`,
+				"",
+				false,
+			},
+
+			{
+				`${upper()}`,
+				nil,
+				true,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncSha1(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${sha1("test")}`,
+				"a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncSha256(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{ // hexadecimal representation of sha256 sum
+				`${sha256("test")}`,
+				"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncTrimSpace(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${trimspace(" test ")}`,
+				"test",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncBase64Sha256(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${base64sha256("test")}`,
+				"n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=",
+				false,
+			},
+			{ // This will differ because we're base64-encoding hex represantiation, not raw bytes
+				`${base64encode(sha256("test"))}`,
+				"OWY4NmQwODE4ODRjN2Q2NTlhMmZlYWEwYzU1YWQwMTVhM2JmNGYxYjJiMGI4MjJjZDE1ZDZjMTViMGYwMGEwOA==",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncMd5(t *testing.T) {
+	testFunction(t, testFunctionConfig{
+		Cases: []testFunctionCase{
+			{
+				`${md5("tada")}`,
+				"ce47d07243bb6eaf5e1322c81baf9bbf",
+				false,
+			},
+			{ // Confirm that we're not trimming any whitespaces
+				`${md5(" tada ")}`,
+				"aadf191a583e53062de2d02c008141c4",
+				false,
+			},
+			{ // We accept empty string too
+				`${md5("")}`,
+				"d41d8cd98f00b204e9800998ecf8427e",
+				false,
+			},
+		},
+	})
+}
+
+func TestInterpolateFuncUUID(t *testing.T) {
+	results := make(map[string]bool)
+
+	for i := 0; i < 100; i++ {
+		ast, err := hil.Parse("${uuid()}")
+		if err != nil {
+			t.Fatalf("err: %s", err)
+		}
+
+		result, err := hil.Eval(ast, langEvalConfig(nil))
+		if err != nil {
+			t.Fatalf("err: %s", err)
+		}
+
+		if results[result.Value.(string)] {
+			t.Fatalf("Got unexpected duplicate uuid: %s", result.Value)
+		}
+
+		results[result.Value.(string)] = true
+	}
 }
 
 type testFunctionConfig struct {
@@ -530,20 +1066,19 @@ type testFunctionCase struct {
 
 func testFunction(t *testing.T, config testFunctionConfig) {
 	for i, tc := range config.Cases {
-		ast, err := lang.Parse(tc.Input)
+		ast, err := hil.Parse(tc.Input)
 		if err != nil {
-			t.Fatalf("%d: err: %s", i, err)
+			t.Fatalf("Case #%d: input: %#v\nerr: %s", i, tc.Input, err)
 		}
 
-		out, _, err := lang.Eval(ast, langEvalConfig(config.Vars))
-		if (err != nil) != tc.Error {
-			t.Fatalf("%d: err: %s", i, err)
+		result, err := hil.Eval(ast, langEvalConfig(config.Vars))
+		if err != nil != tc.Error {
+			t.Fatalf("Case #%d:\ninput: %#v\nerr: %s", i, tc.Input, err)
 		}
 
-		if !reflect.DeepEqual(out, tc.Result) {
-			t.Fatalf(
-				"%d: bad output for input: %s\n\nOutput: %#v\nExpected: %#v",
-				i, tc.Input, out, tc.Result)
+		if !reflect.DeepEqual(result.Value, tc.Result) {
+			t.Fatalf("%d: bad output for input: %s\n\nOutput: %#v\nExpected: %#v",
+				i, tc.Input, result.Value, tc.Result)
 		}
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hashicorp/terraform/config/lang/ast"
+	"github.com/hashicorp/hil/ast"
 )
 
 // An InterpolatedVariable is a variable reference within an interpolation.
@@ -58,6 +58,7 @@ const (
 // A ResourceVariable is a variable that is referencing the field
 // of a resource, such as "${aws_instance.foo.ami}"
 type ResourceVariable struct {
+	Mode  ResourceMode
 	Type  string // Resource type, i.e. "aws_instance"
 	Name  string // Resource name
 	Field string // Resource field
@@ -74,6 +75,13 @@ type SelfVariable struct {
 	Field string
 
 	key string
+}
+
+// SimpleVariable is an unprefixed variable, which can show up when users have
+// strings they are passing down to resources that use interpolation
+// internally. The template_file resource is an example of this.
+type SimpleVariable struct {
+	Key string
 }
 
 // A UserVariable is a variable that is referencing a user variable
@@ -97,6 +105,8 @@ func NewInterpolatedVariable(v string) (InterpolatedVariable, error) {
 		return NewUserVariable(v)
 	} else if strings.HasPrefix(v, "module.") {
 		return NewModuleVariable(v)
+	} else if !strings.ContainsRune(v, '.') {
+		return NewSimpleVariable(v)
 	} else {
 		return NewResourceVariable(v)
 	}
@@ -162,11 +172,28 @@ func (v *PathVariable) FullKey() string {
 }
 
 func NewResourceVariable(key string) (*ResourceVariable, error) {
-	parts := strings.SplitN(key, ".", 3)
-	if len(parts) < 3 {
-		return nil, fmt.Errorf(
-			"%s: resource variables must be three parts: type.name.attr",
-			key)
+	var mode ResourceMode
+	var parts []string
+	if strings.HasPrefix(key, "data.") {
+		mode = DataResourceMode
+		parts = strings.SplitN(key, ".", 4)
+		if len(parts) < 4 {
+			return nil, fmt.Errorf(
+				"%s: data variables must be four parts: data.TYPE.NAME.ATTR",
+				key)
+		}
+
+		// Don't actually need the "data." prefix for parsing, since it's
+		// always constant.
+		parts = parts[1:]
+	} else {
+		mode = ManagedResourceMode
+		parts = strings.SplitN(key, ".", 3)
+		if len(parts) < 3 {
+			return nil, fmt.Errorf(
+				"%s: resource variables must be three parts: TYPE.NAME.ATTR",
+				key)
+		}
 	}
 
 	field := parts[2]
@@ -192,6 +219,7 @@ func NewResourceVariable(key string) (*ResourceVariable, error) {
 	}
 
 	return &ResourceVariable{
+		Mode:  mode,
 		Type:  parts[0],
 		Name:  parts[1],
 		Field: field,
@@ -202,7 +230,14 @@ func NewResourceVariable(key string) (*ResourceVariable, error) {
 }
 
 func (v *ResourceVariable) ResourceId() string {
-	return fmt.Sprintf("%s.%s", v.Type, v.Name)
+	switch v.Mode {
+	case ManagedResourceMode:
+		return fmt.Sprintf("%s.%s", v.Type, v.Name)
+	case DataResourceMode:
+		return fmt.Sprintf("data.%s.%s", v.Type, v.Name)
+	default:
+		panic(fmt.Errorf("unknown resource mode %s", v.Mode))
+	}
 }
 
 func (v *ResourceVariable) FullKey() string {
@@ -224,6 +259,18 @@ func (v *SelfVariable) FullKey() string {
 }
 
 func (v *SelfVariable) GoString() string {
+	return fmt.Sprintf("*%#v", *v)
+}
+
+func NewSimpleVariable(key string) (*SimpleVariable, error) {
+	return &SimpleVariable{key}, nil
+}
+
+func (v *SimpleVariable) FullKey() string {
+	return v.Key
+}
+
+func (v *SimpleVariable) GoString() string {
 	return fmt.Sprintf("*%#v", *v)
 }
 
@@ -263,18 +310,35 @@ func DetectVariables(root ast.Node) ([]InterpolatedVariable, error) {
 			return n
 		}
 
-		vn, ok := n.(*ast.VariableAccess)
-		if !ok {
+		switch vn := n.(type) {
+		case *ast.VariableAccess:
+			v, err := NewInterpolatedVariable(vn.Name)
+			if err != nil {
+				resultErr = err
+				return n
+			}
+			result = append(result, v)
+		case *ast.Index:
+			if va, ok := vn.Target.(*ast.VariableAccess); ok {
+				v, err := NewInterpolatedVariable(va.Name)
+				if err != nil {
+					resultErr = err
+					return n
+				}
+				result = append(result, v)
+			}
+			if va, ok := vn.Key.(*ast.VariableAccess); ok {
+				v, err := NewInterpolatedVariable(va.Name)
+				if err != nil {
+					resultErr = err
+					return n
+				}
+				result = append(result, v)
+			}
+		default:
 			return n
 		}
 
-		v, err := NewInterpolatedVariable(vn.Name)
-		if err != nil {
-			resultErr = err
-			return n
-		}
-
-		result = append(result, v)
 		return n
 	}
 

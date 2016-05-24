@@ -2,18 +2,19 @@ package azure
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/management"
+	"github.com/Azure/azure-sdk-for-go/management/virtualmachinedisk"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
-	"github.com/svanharmelen/azure-sdk-for-go/management"
-	"github.com/svanharmelen/azure-sdk-for-go/management/virtualmachinedisk"
 )
 
 func TestAccAzureDataDisk_basic(t *testing.T) {
 	var disk virtualmachinedisk.DataDiskResponse
+	name := fmt.Sprintf("terraform-test%d", acctest.RandInt())
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -21,13 +22,13 @@ func TestAccAzureDataDisk_basic(t *testing.T) {
 		CheckDestroy: testAccCheckAzureDataDiskDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAzureDataDisk_basic,
+				Config: testAccAzureDataDisk_basic(name),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAzureDataDiskExists(
 						"azure_data_disk.foo", &disk),
 					testAccCheckAzureDataDiskAttributes(&disk),
 					resource.TestCheckResourceAttr(
-						"azure_data_disk.foo", "label", "terraform-test-0"),
+						"azure_data_disk.foo", "label", fmt.Sprintf("%s-0", name)),
 					resource.TestCheckResourceAttr(
 						"azure_data_disk.foo", "size", "10"),
 				),
@@ -38,6 +39,7 @@ func TestAccAzureDataDisk_basic(t *testing.T) {
 
 func TestAccAzureDataDisk_update(t *testing.T) {
 	var disk virtualmachinedisk.DataDiskResponse
+	name := fmt.Sprintf("terraform-test%d", acctest.RandInt())
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
@@ -45,12 +47,12 @@ func TestAccAzureDataDisk_update(t *testing.T) {
 		CheckDestroy: testAccCheckAzureDataDiskDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAzureDataDisk_advanced,
+				Config: testAccAzureDataDisk_advanced(name),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAzureDataDiskExists(
 						"azure_data_disk.foo", &disk),
 					resource.TestCheckResourceAttr(
-						"azure_data_disk.foo", "label", "terraform-test1-1"),
+						"azure_data_disk.foo", "label", fmt.Sprintf("%s-1", name)),
 					resource.TestCheckResourceAttr(
 						"azure_data_disk.foo", "lun", "1"),
 					resource.TestCheckResourceAttr(
@@ -58,17 +60,17 @@ func TestAccAzureDataDisk_update(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"azure_data_disk.foo", "caching", "ReadOnly"),
 					resource.TestCheckResourceAttr(
-						"azure_data_disk.foo", "virtual_machine", "terraform-test1"),
+						"azure_data_disk.foo", "virtual_machine", name),
 				),
 			},
 
 			resource.TestStep{
-				Config: testAccAzureDataDisk_update,
+				Config: testAccAzureDataDisk_update(name),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAzureDataDiskExists(
 						"azure_data_disk.foo", &disk),
 					resource.TestCheckResourceAttr(
-						"azure_data_disk.foo", "label", "terraform-test1-1"),
+						"azure_data_disk.foo", "label", fmt.Sprintf("%s-1", name)),
 					resource.TestCheckResourceAttr(
 						"azure_data_disk.foo", "lun", "2"),
 					resource.TestCheckResourceAttr(
@@ -102,8 +104,8 @@ func testAccCheckAzureDataDiskExists(
 			return err
 		}
 
-		mc := testAccProvider.Meta().(*Client).mgmtClient
-		d, err := virtualmachinedisk.NewClient(mc).GetDataDisk(vm, vm, vm, lun)
+		vmDiskClient := testAccProvider.Meta().(*Client).vmDiskClient
+		d, err := vmDiskClient.GetDataDisk(vm, vm, vm, lun)
 		if err != nil {
 			return err
 		}
@@ -139,7 +141,7 @@ func testAccCheckAzureDataDiskAttributes(
 }
 
 func testAccCheckAzureDataDiskDestroy(s *terraform.State) error {
-	mc := testAccProvider.Meta().(*Client).mgmtClient
+	vmDiskClient := testAccProvider.Meta().(*Client).vmDiskClient
 
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "azure_data_disk" {
@@ -156,7 +158,7 @@ func testAccCheckAzureDataDiskDestroy(s *terraform.State) error {
 			return err
 		}
 
-		_, err = virtualmachinedisk.NewClient(mc).GetDataDisk(vm, vm, vm, lun)
+		_, err = vmDiskClient.GetDataDisk(vm, vm, vm, lun)
 		if err == nil {
 			return fmt.Errorf("Data disk %s still exists", rs.Primary.ID)
 		}
@@ -169,68 +171,74 @@ func testAccCheckAzureDataDiskDestroy(s *terraform.State) error {
 	return nil
 }
 
-var testAccAzureDataDisk_basic = fmt.Sprintf(`
-resource "azure_instance" "foo" {
-    name = "terraform-test"
-    image = "Ubuntu Server 14.04 LTS"
-    size = "Basic_A1"
-    storage = "%s"
-    location = "West US"
-    username = "terraform"
-    password = "Pass!admin123"
+func testAccAzureDataDisk_basic(name string) string {
+	return fmt.Sprintf(`
+		resource "azure_instance" "foo" {
+				name = "%s"
+				image = "Ubuntu Server 14.04 LTS"
+				size = "Basic_A1"
+				storage_service_name = "%s"
+				location = "West US"
+				username = "terraform"
+				password = "Pass!admin123"
+		}
+
+		resource "azure_data_disk" "foo" {
+				lun = 0
+				size = 10
+				storage_service_name = "${azure_instance.foo.storage_service_name}"
+				virtual_machine = "${azure_instance.foo.id}"
+		}`, name, testAccStorageServiceName)
 }
 
-resource "azure_data_disk" "foo" {
-    lun = 0
-    size = 10
-    storage = "${azure_instance.foo.storage}"
-    virtual_machine = "${azure_instance.foo.id}"
-}`, os.Getenv("AZURE_STORAGE"))
+func testAccAzureDataDisk_advanced(name string) string {
+	return fmt.Sprintf(`
+		resource "azure_instance" "foo" {
+				name = "%s"
+				image = "Ubuntu Server 14.04 LTS"
+				size = "Basic_A1"
+				storage_service_name = "%s"
+				location = "West US"
+				username = "terraform"
+				password = "Pass!admin123"
+		}
 
-var testAccAzureDataDisk_advanced = fmt.Sprintf(`
-resource "azure_instance" "foo" {
-    name = "terraform-test1"
-    image = "Ubuntu Server 14.04 LTS"
-    size = "Basic_A1"
-    storage = "%s"
-    location = "West US"
-    username = "terraform"
-    password = "Pass!admin123"
+		resource "azure_data_disk" "foo" {
+				lun = 1
+				size = 10
+				caching = "ReadOnly"
+				storage_service_name = "${azure_instance.foo.storage_service_name}"
+				virtual_machine = "${azure_instance.foo.id}"
+		}`, name, testAccStorageServiceName)
 }
 
-resource "azure_data_disk" "foo" {
-    lun = 1
-    size = 10
-    caching = "ReadOnly"
-    storage = "${azure_instance.foo.storage}"
-    virtual_machine = "${azure_instance.foo.id}"
-}`, os.Getenv("AZURE_STORAGE"))
+func testAccAzureDataDisk_update(name string) string {
+	return fmt.Sprintf(`
+		resource "azure_instance" "foo" {
+				name = "%s"
+				image = "Ubuntu Server 14.04 LTS"
+				size = "Basic_A1"
+				storage_service_name = "%s"
+				location = "West US"
+				username = "terraform"
+				password = "Pass!admin123"
+		}
 
-var testAccAzureDataDisk_update = fmt.Sprintf(`
-resource "azure_instance" "foo" {
-    name = "terraform-test1"
-    image = "Ubuntu Server 14.04 LTS"
-    size = "Basic_A1"
-    storage = "%s"
-    location = "West US"
-    username = "terraform"
-    password = "Pass!admin123"
+		resource "azure_instance" "bar" {
+				name = "terraform-test2"
+				image = "Ubuntu Server 14.04 LTS"
+				size = "Basic_A1"
+				storage_service_name = "${azure_instance.foo.storage_service_name}"
+				location = "West US"
+				username = "terraform"
+				password = "Pass!admin123"
+		}
+
+		resource "azure_data_disk" "foo" {
+				lun = 2
+				size = 20
+				caching = "ReadWrite"
+				storage_service_name = "${azure_instance.bar.storage_service_name}"
+				virtual_machine = "${azure_instance.bar.id}"
+		}`, name, testAccStorageServiceName)
 }
-
-resource "azure_instance" "bar" {
-    name = "terraform-test2"
-    image = "Ubuntu Server 14.04 LTS"
-    size = "Basic_A1"
-    storage = "${azure_instance.foo.storage}"
-    location = "West US"
-    username = "terraform"
-    password = "Pass!admin123"
-}
-
-resource "azure_data_disk" "foo" {
-    lun = 2
-    size = 20
-    caching = "ReadWrite"
-    storage = "${azure_instance.bar.storage}"
-    virtual_machine = "${azure_instance.bar.id}"
-}`, os.Getenv("AZURE_STORAGE"))

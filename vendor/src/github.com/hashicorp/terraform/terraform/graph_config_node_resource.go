@@ -2,6 +2,7 @@ package terraform
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/hashicorp/terraform/config"
@@ -27,6 +28,22 @@ type GraphNodeConfigResource struct {
 	Targets []ResourceAddress
 
 	Path []string
+}
+
+func (n *GraphNodeConfigResource) Copy() *GraphNodeConfigResource {
+	ncr := &GraphNodeConfigResource{
+		Resource:    n.Resource.Copy(),
+		DestroyMode: n.DestroyMode,
+		Targets:     make([]ResourceAddress, 0, len(n.Targets)),
+		Path:        make([]string, 0, len(n.Path)),
+	}
+	for _, t := range n.Targets {
+		ncr.Targets = append(ncr.Targets, *t.Copy())
+	}
+	for _, p := range n.Path {
+		ncr.Path = append(ncr.Path, p)
+	}
+	return ncr
 }
 
 func (n *GraphNodeConfigResource) ConfigType() GraphNodeConfigType {
@@ -163,9 +180,8 @@ func (n *GraphNodeConfigResource) DynamicExpand(ctx EvalContext) (*Graph, error)
 		// expand orphans, which have all the same semantics in a destroy
 		// as a primary.
 		steps = append(steps, &OrphanTransformer{
-			State:     state,
-			View:      n.Resource.Id(),
-			Targeting: (len(n.Targets) > 0),
+			State: state,
+			View:  n.Resource.Id(),
 		})
 
 		steps = append(steps, &DeposedTransformer{
@@ -180,6 +196,12 @@ func (n *GraphNodeConfigResource) DynamicExpand(ctx EvalContext) (*Graph, error)
 			View:  n.Resource.Id(),
 		})
 	}
+
+	// We always want to apply targeting
+	steps = append(steps, &TargetsTransformer{
+		ParsedTargets: n.Targets,
+		Destroy:       n.DestroyMode != DestroyNone,
+	})
 
 	// Always end with the root being added
 	steps = append(steps, &RootTransformer{})
@@ -197,6 +219,7 @@ func (n *GraphNodeConfigResource) ResourceAddress() *ResourceAddress {
 		InstanceType: TypePrimary,
 		Name:         n.Resource.Name,
 		Type:         n.Resource.Type,
+		Mode:         n.Resource.Mode,
 	}
 }
 
@@ -242,11 +265,60 @@ func (n *GraphNodeConfigResource) DestroyNode(mode GraphNodeDestroyMode) GraphNo
 	}
 
 	result := &graphNodeResourceDestroy{
-		GraphNodeConfigResource: *n,
+		GraphNodeConfigResource: *n.Copy(),
 		Original:                n,
 	}
 	result.DestroyMode = mode
 	return result
+}
+
+// GraphNodeNoopPrunable
+func (n *GraphNodeConfigResource) Noop(opts *NoopOpts) bool {
+	log.Printf("[DEBUG] Checking resource noop: %s", n.Name())
+	// We don't have any noop optimizations for destroy nodes yet
+	if n.DestroyMode != DestroyNone {
+		log.Printf("[DEBUG] Destroy node, not a noop")
+		return false
+	}
+
+	// If there is no diff, then we aren't a noop since something needs to
+	// be done (such as a plan). We only check if we're a noop in a diff.
+	if opts.Diff == nil || opts.Diff.Empty() {
+		log.Printf("[DEBUG] No diff, not a noop")
+		return false
+	}
+
+	// If the count has any interpolations, we can't prune this node since
+	// we need to be sure to evaluate the count so that splat variables work
+	// later (which need to know the full count).
+	if len(n.Resource.RawCount.Interpolations) > 0 {
+		log.Printf("[DEBUG] Count has interpolations, not a noop")
+		return false
+	}
+
+	// If we have no module diff, we're certainly a noop. This is because
+	// it means there is a diff, and that the module we're in just isn't
+	// in it, meaning we're not doing anything.
+	if opts.ModDiff == nil || opts.ModDiff.Empty() {
+		log.Printf("[DEBUG] No mod diff, treating resource as a noop")
+		return true
+	}
+
+	// Grab the ID which is the prefix (in the case count > 0 at some point)
+	prefix := n.Resource.Id()
+
+	// Go through the diff and if there are any with our name on it, keep us
+	found := false
+	for k, _ := range opts.ModDiff.Resources {
+		if strings.HasPrefix(k, prefix) {
+			log.Printf("[DEBUG] Diff has %s, resource is not a noop", k)
+			found = true
+			break
+		}
+	}
+
+	log.Printf("[DEBUG] Final noop value: %t", !found)
+	return !found
 }
 
 // Same as GraphNodeConfigResource, but for flattening
@@ -333,6 +405,13 @@ func (n *graphNodeResourceDestroyFlat) Path() []string {
 
 func (n *graphNodeResourceDestroyFlat) CreateNode() dag.Vertex {
 	return n.FlatCreateNode
+}
+
+func (n *graphNodeResourceDestroyFlat) ProvidedBy() []string {
+	prefix := modulePrefixStr(n.PathValue)
+	return modulePrefixList(
+		n.GraphNodeConfigResource.ProvidedBy(),
+		prefix)
 }
 
 // graphNodeResourceDestroy represents the logical destruction of a

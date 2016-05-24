@@ -22,6 +22,7 @@ type ResourceData struct {
 	config *terraform.ResourceConfig
 	state  *terraform.InstanceState
 	diff   *terraform.InstanceDiff
+	meta   map[string]string
 
 	// Don't set
 	multiReader *MultiLevelFieldReader
@@ -30,6 +31,7 @@ type ResourceData struct {
 	partial     bool
 	partialMap  map[string]struct{}
 	once        sync.Once
+	isNew       bool
 }
 
 // getResult is the internal structure that is generated when a Get
@@ -171,6 +173,14 @@ func (d *ResourceData) SetPartial(k string) {
 	}
 }
 
+func (d *ResourceData) MarkNewResource() {
+	d.isNew = true
+}
+
+func (d *ResourceData) IsNewResource() bool {
+	return d.isNew
+}
+
 // Id returns the ID of the resource.
 func (d *ResourceData) Id() string {
 	var result string
@@ -212,11 +222,19 @@ func (d *ResourceData) SetConnInfo(v map[string]string) {
 	d.newState.Ephemeral.ConnInfo = v
 }
 
+// SetType sets the ephemeral type for the data. This is only required
+// for importing.
+func (d *ResourceData) SetType(t string) {
+	d.once.Do(d.init)
+	d.newState.Ephemeral.Type = t
+}
+
 // State returns the new InstanceState after the diff and any Set
 // calls.
 func (d *ResourceData) State() *terraform.InstanceState {
 	var result terraform.InstanceState
 	result.ID = d.Id()
+	result.Meta = d.meta
 
 	// If we have no ID, then this resource doesn't exist and we just
 	// return nil.
@@ -228,7 +246,7 @@ func (d *ResourceData) State() *terraform.InstanceState {
 	// attribute set as a map[string]interface{}, write it to a MapFieldWriter,
 	// and then use that map.
 	rawMap := make(map[string]interface{})
-	for k, _ := range d.schema {
+	for k := range d.schema {
 		source := getSourceSet
 		if d.partial {
 			source = getSourceState
@@ -251,7 +269,9 @@ func (d *ResourceData) State() *terraform.InstanceState {
 	}
 
 	result.Attributes = mapW.Map()
-	result.Ephemeral.ConnInfo = d.ConnInfo()
+	if d.newState != nil {
+		result.Ephemeral = d.newState.Ephemeral
+	}
 
 	// TODO: This is hacky and we can remove this when we have a proper
 	// state writer. We should instead have a proper StateFieldWriter
@@ -277,7 +297,7 @@ func (d *ResourceData) init() {
 	// Initialize the field that will store our new state
 	var copyState terraform.InstanceState
 	if d.state != nil {
-		copyState = *d.state
+		copyState = *d.state.DeepCopy()
 	}
 	d.newState = &copyState
 
@@ -343,13 +363,13 @@ func (d *ResourceData) diffChange(
 }
 
 func (d *ResourceData) getChange(
-	key string,
+	k string,
 	oldLevel getSource,
 	newLevel getSource) (getResult, getResult) {
 	var parts, parts2 []string
-	if key != "" {
-		parts = strings.Split(key, ".")
-		parts2 = strings.Split(key, ".")
+	if k != "" {
+		parts = strings.Split(k, ".")
+		parts2 = strings.Split(k, ".")
 	}
 
 	o := d.get(parts, oldLevel)
@@ -372,13 +392,6 @@ func (d *ResourceData) get(addr []string, source getSource) getResult {
 		level = "config"
 	} else {
 		level = "state"
-	}
-
-	// Build the address of the key we're looking for and ask the FieldReader
-	for i, v := range addr {
-		if v[0] == '~' {
-			addr[i] = v[1:]
-		}
 	}
 
 	var result FieldReadResult

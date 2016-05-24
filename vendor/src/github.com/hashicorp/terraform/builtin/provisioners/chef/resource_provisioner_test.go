@@ -1,6 +1,8 @@
 package chef
 
 import (
+	"fmt"
+	"path"
 	"testing"
 
 	"github.com/hashicorp/terraform/communicator"
@@ -14,13 +16,12 @@ func TestResourceProvisioner_impl(t *testing.T) {
 
 func TestResourceProvider_Validate_good(t *testing.T) {
 	c := testConfig(t, map[string]interface{}{
-		"attributes":             []interface{}{"key1 { subkey1 = value1 }"},
 		"environment":            "_default",
 		"node_name":              "nodename1",
 		"run_list":               []interface{}{"cookbook::recipe"},
 		"server_url":             "https://chef.local",
 		"validation_client_name": "validator",
-		"validation_key_path":    "validator.pem",
+		"validation_key":         "contentsofsomevalidator.pem",
 	})
 	r := new(ResourceProvisioner)
 	warn, errs := r.Validate(c)
@@ -58,6 +59,7 @@ func testConfig(t *testing.T, c map[string]interface{}) *terraform.ResourceConfi
 func TestResourceProvider_runChefClient(t *testing.T) {
 	cases := map[string]struct {
 		Config   *terraform.ResourceConfig
+		ChefCmd  string
 		ConfDir  string
 		Commands map[string]bool
 	}{
@@ -70,10 +72,14 @@ func TestResourceProvider_runChefClient(t *testing.T) {
 				"validation_key_path":    "test-fixtures/validator.pem",
 			}),
 
+			ChefCmd: linuxChefCmd,
+
 			ConfDir: linuxConfDir,
 
 			Commands: map[string]bool{
-				`sudo chef-client -j "/etc/chef/first-boot.json" -E "_default"`: true,
+				fmt.Sprintf(`sudo %s -j %q -E "_default"`,
+					linuxChefCmd,
+					path.Join(linuxConfDir, "first-boot.json")): true,
 			},
 		},
 
@@ -87,10 +93,14 @@ func TestResourceProvider_runChefClient(t *testing.T) {
 				"validation_key_path":    "test-fixtures/validator.pem",
 			}),
 
+			ChefCmd: linuxChefCmd,
+
 			ConfDir: linuxConfDir,
 
 			Commands: map[string]bool{
-				`chef-client -j "/etc/chef/first-boot.json" -E "_default"`: true,
+				fmt.Sprintf(`%s -j %q -E "_default"`,
+					linuxChefCmd,
+					path.Join(linuxConfDir, "first-boot.json")): true,
 			},
 		},
 
@@ -98,17 +108,21 @@ func TestResourceProvider_runChefClient(t *testing.T) {
 			Config: testConfig(t, map[string]interface{}{
 				"environment":            "production",
 				"node_name":              "nodename1",
-				"prevent_sudo":           true, // Needs to be set for ALL WinRM tests!
+				"prevent_sudo":           true,
 				"run_list":               []interface{}{"cookbook::recipe"},
 				"server_url":             "https://chef.local",
 				"validation_client_name": "validator",
 				"validation_key_path":    "test-fixtures/validator.pem",
 			}),
 
+			ChefCmd: windowsChefCmd,
+
 			ConfDir: windowsConfDir,
 
 			Commands: map[string]bool{
-				`chef-client -j "C:/chef/first-boot.json" -E "production"`: true,
+				fmt.Sprintf(`%s -j %q -E "production"`,
+					windowsChefCmd,
+					path.Join(windowsConfDir, "first-boot.json")): true,
 			},
 		},
 	}
@@ -125,10 +139,83 @@ func TestResourceProvider_runChefClient(t *testing.T) {
 			t.Fatalf("Error: %v", err)
 		}
 
-		p.runChefClient = p.runChefClientFunc(tc.ConfDir)
+		p.runChefClient = p.runChefClientFunc(tc.ChefCmd, tc.ConfDir)
 		p.useSudo = !p.PreventSudo
 
 		err = p.runChefClient(o, c)
+		if err != nil {
+			t.Fatalf("Test %q failed: %v", k, err)
+		}
+	}
+}
+
+func TestResourceProvider_fetchChefCertificates(t *testing.T) {
+	cases := map[string]struct {
+		Config   *terraform.ResourceConfig
+		KnifeCmd string
+		ConfDir  string
+		Commands map[string]bool
+	}{
+		"Sudo": {
+			Config: testConfig(t, map[string]interface{}{
+				"fetch_chef_certificates": true,
+				"node_name":               "nodename1",
+				"run_list":                []interface{}{"cookbook::recipe"},
+				"server_url":              "https://chef.local",
+				"validation_client_name":  "validator",
+				"validation_key_path":     "test-fixtures/validator.pem",
+			}),
+
+			KnifeCmd: linuxKnifeCmd,
+
+			ConfDir: linuxConfDir,
+
+			Commands: map[string]bool{
+				fmt.Sprintf(`sudo %s ssl fetch -c %s`,
+					linuxKnifeCmd,
+					path.Join(linuxConfDir, "client.rb")): true,
+			},
+		},
+
+		"NoSudo": {
+			Config: testConfig(t, map[string]interface{}{
+				"fetch_chef_certificates": true,
+				"node_name":               "nodename1",
+				"prevent_sudo":            true,
+				"run_list":                []interface{}{"cookbook::recipe"},
+				"server_url":              "https://chef.local",
+				"validation_client_name":  "validator",
+				"validation_key_path":     "test-fixtures/validator.pem",
+			}),
+
+			KnifeCmd: windowsKnifeCmd,
+
+			ConfDir: windowsConfDir,
+
+			Commands: map[string]bool{
+				fmt.Sprintf(`%s ssl fetch -c %s`,
+					windowsKnifeCmd,
+					path.Join(windowsConfDir, "client.rb")): true,
+			},
+		},
+	}
+
+	r := new(ResourceProvisioner)
+	o := new(terraform.MockUIOutput)
+	c := new(communicator.MockCommunicator)
+
+	for k, tc := range cases {
+		c.Commands = tc.Commands
+
+		p, err := r.decodeConfig(tc.Config)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+
+		p.fetchChefCertificates = p.fetchChefCertificatesFunc(tc.KnifeCmd, tc.ConfDir)
+		p.useSudo = !p.PreventSudo
+
+		err = p.fetchChefCertificates(o, c)
 		if err != nil {
 			t.Fatalf("Test %q failed: %v", k, err)
 		}

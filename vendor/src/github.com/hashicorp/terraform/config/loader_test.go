@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io/ioutil"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -37,15 +38,121 @@ func TestIsEmptyDir_noConfigs(t *testing.T) {
 	}
 }
 
-func TestLoad_badType(t *testing.T) {
-	_, err := Load(filepath.Join(fixtureDir, "bad_type.tf.nope"))
+func TestLoadFile_badType(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "bad_type.tf.nope"))
 	if err == nil {
 		t.Fatal("should have error")
 	}
 }
 
-func TestLoadBasic(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "basic.tf"))
+func TestLoadFile_lifecycleKeyCheck(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "lifecycle_cbd_typo.tf"))
+	if err == nil {
+		t.Fatal("should have error")
+	}
+
+	t.Logf("err: %s", err)
+}
+
+func TestLoadFile_resourceArityMistake(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "resource-arity-mistake.tf"))
+	if err == nil {
+		t.Fatal("should have error")
+	}
+	expected := "Error loading test-fixtures/resource-arity-mistake.tf: position 2:10: resource must be followed by exactly two strings, a type and a name"
+	if err.Error() != expected {
+		t.Fatalf("expected:\n%s\ngot:\n%s", expected, err)
+	}
+}
+
+func TestLoadFile_dataSourceArityMistake(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "data-source-arity-mistake.tf"))
+	if err == nil {
+		t.Fatal("should have error")
+	}
+	expected := "Error loading test-fixtures/data-source-arity-mistake.tf: position 2:6: 'data' must be followed by exactly two strings: a type and a name"
+	if err.Error() != expected {
+		t.Fatalf("expected:\n%s\ngot:\n%s", expected, err)
+	}
+}
+
+func TestLoadFileWindowsLineEndings(t *testing.T) {
+	testFile := filepath.Join(fixtureDir, "windows-line-endings.tf")
+
+	contents, err := ioutil.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if !strings.Contains(string(contents), "\r\n") {
+		t.Fatalf("Windows line endings test file %s contains no windows line endings - this may be an autocrlf related issue.", testFile)
+	}
+
+	c, err := LoadFile(testFile)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	if c.Dir != "" {
+		t.Fatalf("bad: %#v", c.Dir)
+	}
+
+	actual := resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(windowsHeredocResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFileHeredoc(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "heredoc.tf"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	if c.Dir != "" {
+		t.Fatalf("bad: %#v", c.Dir)
+	}
+
+	actual := providerConfigsStr(c.ProviderConfigs)
+	if actual != strings.TrimSpace(heredocProvidersStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	actual = resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(heredocResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFileEscapedQuotes(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "escapedquotes.tf"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	if c.Dir != "" {
+		t.Fatalf("bad: %#v", c.Dir)
+	}
+
+	actual := resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(escapedquotesResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFileBasic(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "basic.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -84,8 +191,8 @@ func TestLoadBasic(t *testing.T) {
 	}
 }
 
-func TestLoadBasic_empty(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "empty.tf"))
+func TestLoadFileBasic_empty(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "empty.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -95,11 +202,11 @@ func TestLoadBasic_empty(t *testing.T) {
 	}
 }
 
-func TestLoadBasic_import(t *testing.T) {
+func TestLoadFileBasic_import(t *testing.T) {
 	// Skip because we disabled importing
 	t.Skip()
 
-	c, err := Load(filepath.Join(fixtureDir, "import.tf"))
+	c, err := LoadFile(filepath.Join(fixtureDir, "import.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -124,8 +231,8 @@ func TestLoadBasic_import(t *testing.T) {
 	}
 }
 
-func TestLoadBasic_json(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "basic.tf.json"))
+func TestLoadFileBasic_json(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "basic.tf.json"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -164,8 +271,8 @@ func TestLoadBasic_json(t *testing.T) {
 	}
 }
 
-func TestLoadBasic_modules(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "modules.tf"))
+func TestLoadFileBasic_modules(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "modules.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -184,8 +291,53 @@ func TestLoadBasic_modules(t *testing.T) {
 	}
 }
 
-func TestLoad_variables(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "variables.tf"))
+func TestLoadJSONBasic(t *testing.T) {
+	raw, err := ioutil.ReadFile(filepath.Join(fixtureDir, "basic.tf.json"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	c, err := LoadJSON(raw)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	if c.Dir != "" {
+		t.Fatalf("bad: %#v", c.Dir)
+	}
+
+	expectedAtlas := &AtlasConfig{Name: "mitchellh/foo"}
+	if !reflect.DeepEqual(c.Atlas, expectedAtlas) {
+		t.Fatalf("bad: %#v", c.Atlas)
+	}
+
+	actual := variablesStr(c.Variables)
+	if actual != strings.TrimSpace(basicVariablesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	actual = providerConfigsStr(c.ProviderConfigs)
+	if actual != strings.TrimSpace(basicProvidersStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	actual = resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(basicResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	actual = outputsStr(c.Outputs)
+	if actual != strings.TrimSpace(basicOutputsStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+}
+
+func TestLoadFile_variables(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "variables.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -303,8 +455,32 @@ func TestLoadDir_override(t *testing.T) {
 	}
 }
 
-func TestLoad_provisioners(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "provisioners.tf"))
+func TestLoadFile_mismatchedVariableTypes(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "variable-mismatched-type.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'not_a_map' has a default value which is not of type 'string'") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
+	}
+}
+
+func TestLoadFile_badVariableTypes(t *testing.T) {
+	_, err := LoadFile(filepath.Join(fixtureDir, "bad-variable-type.tf"))
+	if err == nil {
+		t.Fatalf("bad: expected error")
+	}
+
+	errorStr := err.Error()
+	if !strings.Contains(errorStr, "'bad_type' must be of type string") {
+		t.Fatalf("bad: expected error has wrong text: %s", errorStr)
+	}
+}
+
+func TestLoadFile_provisioners(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "provisioners.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -319,8 +495,8 @@ func TestLoad_provisioners(t *testing.T) {
 	}
 }
 
-func TestLoad_connections(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "connection.tf"))
+func TestLoadFile_connections(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "connection.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -357,8 +533,8 @@ func TestLoad_connections(t *testing.T) {
 	}
 }
 
-func TestLoad_createBeforeDestroy(t *testing.T) {
-	c, err := Load(filepath.Join(fixtureDir, "create-before-destroy.tf"))
+func TestLoadFile_createBeforeDestroy(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "create-before-destroy.tf"))
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -394,12 +570,229 @@ func TestLoad_createBeforeDestroy(t *testing.T) {
 	}
 }
 
+func TestLoadFile_ignoreChanges(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "ignore-changes.tf"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := resourcesStr(c.Resources)
+	print(actual)
+	if actual != strings.TrimSpace(ignoreChangesResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	// Check for the flag value
+	r := c.Resources[0]
+	if r.Name != "web" && r.Type != "aws_instance" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	// Should populate ignore changes
+	if len(r.Lifecycle.IgnoreChanges) == 0 {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	r = c.Resources[1]
+	if r.Name != "bar" && r.Type != "aws_instance" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	// Should not populate ignore changes
+	if len(r.Lifecycle.IgnoreChanges) > 0 {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	r = c.Resources[2]
+	if r.Name != "baz" && r.Type != "aws_instance" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	// Should not populate ignore changes
+	if len(r.Lifecycle.IgnoreChanges) > 0 {
+		t.Fatalf("Bad: %#v", r)
+	}
+}
+
+func TestLoad_preventDestroyString(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "prevent-destroy-string.tf"))
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := resourcesStr(c.Resources)
+	if actual != strings.TrimSpace(createBeforeDestroyResourcesStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	// Check for the flag value
+	r := c.Resources[0]
+	if r.Name != "web" && r.Type != "aws_instance" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	// Should enable create before destroy
+	if !r.Lifecycle.PreventDestroy {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	r = c.Resources[1]
+	if r.Name != "bar" && r.Type != "aws_instance" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	// Should not enable create before destroy
+	if r.Lifecycle.PreventDestroy {
+		t.Fatalf("Bad: %#v", r)
+	}
+}
+
 func TestLoad_temporary_files(t *testing.T) {
 	_, err := LoadDir(filepath.Join(fixtureDir, "dir-temporary-files"))
 	if err == nil {
 		t.Fatalf("Expected to see an error stating no config files found")
 	}
 }
+
+func TestLoad_hclAttributes(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "attributes.tf"))
+	if err != nil {
+		t.Fatalf("Bad: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := resourcesStr(c.Resources)
+	print(actual)
+	if actual != strings.TrimSpace(jsonAttributeStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	r := c.Resources[0]
+	if r.Name != "test" && r.Type != "cloudstack_firewall" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	raw := r.RawConfig
+	if raw.Raw["ipaddress"] != "192.168.0.1" {
+		t.Fatalf("Bad: %s", raw.Raw["ipAddress"])
+	}
+
+	rule := raw.Raw["rule"].([]map[string]interface{})[0]
+	if rule["protocol"] != "tcp" {
+		t.Fatalf("Bad: %s", rule["protocol"])
+	}
+
+	if rule["source_cidr"] != "10.0.0.0/8" {
+		t.Fatalf("Bad: %s", rule["source_cidr"])
+	}
+
+	ports := rule["ports"].([]interface{})
+
+	if ports[0] != "80" {
+		t.Fatalf("Bad ports: %s", ports[0])
+	}
+	if ports[1] != "1000-2000" {
+		t.Fatalf("Bad ports: %s", ports[1])
+	}
+}
+
+func TestLoad_jsonAttributes(t *testing.T) {
+	c, err := LoadFile(filepath.Join(fixtureDir, "attributes.tf.json"))
+	if err != nil {
+		t.Fatalf("Bad: %s", err)
+	}
+
+	if c == nil {
+		t.Fatal("config should not be nil")
+	}
+
+	actual := resourcesStr(c.Resources)
+	print(actual)
+	if actual != strings.TrimSpace(jsonAttributeStr) {
+		t.Fatalf("bad:\n%s", actual)
+	}
+
+	r := c.Resources[0]
+	if r.Name != "test" && r.Type != "cloudstack_firewall" {
+		t.Fatalf("Bad: %#v", r)
+	}
+
+	raw := r.RawConfig
+	if raw.Raw["ipaddress"] != "192.168.0.1" {
+		t.Fatalf("Bad: %s", raw.Raw["ipAddress"])
+	}
+
+	rule := raw.Raw["rule"].([]map[string]interface{})[0]
+	if rule["protocol"] != "tcp" {
+		t.Fatalf("Bad: %s", rule["protocol"])
+	}
+
+	if rule["source_cidr"] != "10.0.0.0/8" {
+		t.Fatalf("Bad: %s", rule["source_cidr"])
+	}
+
+	ports := rule["ports"].([]interface{})
+
+	if ports[0] != "80" {
+		t.Fatalf("Bad ports: %s", ports[0])
+	}
+	if ports[1] != "1000-2000" {
+		t.Fatalf("Bad ports: %s", ports[1])
+	}
+}
+
+const jsonAttributeStr = `
+cloudstack_firewall.test (x1)
+  ipaddress
+  rule
+`
+
+const windowsHeredocResourcesStr = `
+aws_instance.test (x1)
+  user_data
+`
+
+const heredocProvidersStr = `
+aws
+  access_key
+  secret_key
+`
+
+const heredocResourcesStr = `
+aws_iam_policy.policy (x1)
+  description
+  name
+  path
+  policy
+aws_instance.heredocwithnumbers (x1)
+  ami
+  provisioners
+    local-exec
+      command
+aws_instance.test (x1)
+  ami
+  provisioners
+    remote-exec
+      inline
+`
+
+const escapedquotesResourcesStr = `
+aws_instance.quotes (x1)
+  ami
+  vars
+    user: var.ami
+`
 
 const basicOutputsStr = `
 web_ip
@@ -418,7 +811,7 @@ do
 `
 
 const basicResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   VPC
   security_groups
   provisioners
@@ -429,7 +822,7 @@ aws_instance[db] (x1)
     aws_instance.web
   vars
     resource: aws_security_group.firewall.*.id
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   network_interface
   security_groups
@@ -440,10 +833,21 @@ aws_instance[web] (x1)
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const basicVariablesStr = `
+bar (required) (string)
+  <>
+  <>
+baz (map)
+  map[key:value]
+  <>
 foo
   bar
   bar
@@ -466,18 +870,23 @@ do
 `
 
 const dirBasicResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   security_groups
   vars
     resource: aws_security_group.firewall.*.id
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   network_interface
   security_groups
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const dirBasicVariablesStr = `
@@ -503,10 +912,10 @@ do
 `
 
 const dirOverrideResourcesStr = `
-aws_instance[db] (x1)
+aws_instance.db (x1)
   ami
   security_groups
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   foo
   network_interface
@@ -514,7 +923,13 @@ aws_instance[web] (x1)
   vars
     resource: aws_security_group.firewall.foo
     user: var.foo
-aws_security_group[firewall] (x5)
+aws_security_group.firewall (x5)
+data.do.depends (x1)
+  hello
+  dependsOn
+    data.do.simple
+data.do.simple (x1)
+  foo
 `
 
 const dirOverrideVariablesStr = `
@@ -530,8 +945,8 @@ aws
 `
 
 const importResourcesStr = `
-aws_security_group[db] (x1)
-aws_security_group[web] (x1)
+aws_security_group.db (x1)
+aws_security_group.web (x1)
 `
 
 const importVariablesStr = `
@@ -550,7 +965,7 @@ bar
 `
 
 const provisionerResourcesStr = `
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   security_groups
   provisioners
@@ -562,7 +977,7 @@ aws_instance[web] (x1)
 `
 
 const connectionResourcesStr = `
-aws_instance[web] (x1)
+aws_instance.web (x1)
   ami
   security_groups
   provisioners
@@ -588,8 +1003,17 @@ foo (required)
 `
 
 const createBeforeDestroyResourcesStr = `
-aws_instance[bar] (x1)
+aws_instance.bar (x1)
   ami
-aws_instance[web] (x1)
+aws_instance.web (x1)
+  ami
+`
+
+const ignoreChangesResourcesStr = `
+aws_instance.bar (x1)
+  ami
+aws_instance.baz (x1)
+  ami
+aws_instance.web (x1)
   ami
 `

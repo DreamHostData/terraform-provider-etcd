@@ -27,6 +27,8 @@ func (c *PlanCommand) Run(args []string) int {
 	cmdFlags.BoolVar(&refresh, "refresh", true, "refresh")
 	c.addModuleDepthFlag(cmdFlags, &moduleDepth)
 	cmdFlags.StringVar(&outPath, "out", "", "path")
+	cmdFlags.IntVar(
+		&c.Meta.parallelism, "parallelism", DefaultParallelism, "parallelism")
 	cmdFlags.StringVar(&c.Meta.statePath, "state", DefaultStateFilename, "path")
 	cmdFlags.StringVar(&c.Meta.backupPath, "backup", "", "path")
 	cmdFlags.BoolVar(&detailed, "detailed-exitcode", false, "detailed-exitcode")
@@ -53,20 +55,26 @@ func (c *PlanCommand) Run(args []string) int {
 		}
 	}
 
+	countHook := new(CountHook)
+	c.Meta.extraHooks = []terraform.Hook{countHook}
+
 	ctx, _, err := c.Context(contextOpts{
-		Destroy:   destroy,
-		Path:      path,
-		StatePath: c.Meta.statePath,
+		Destroy:     destroy,
+		Path:        path,
+		StatePath:   c.Meta.statePath,
+		Parallelism: c.Meta.parallelism,
 	})
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1
 	}
-	if !validateContext(ctx, c.Ui) {
-		return 1
-	}
+
 	if err := ctx.Input(c.InputMode()); err != nil {
 		c.Ui.Error(fmt.Sprintf("Error configuring: %s", err))
+		return 1
+	}
+
+	if !validateContext(ctx, c.Ui) {
 		return 1
 	}
 
@@ -94,15 +102,6 @@ func (c *PlanCommand) Run(args []string) int {
 		return 1
 	}
 
-	if plan.Diff.Empty() {
-		c.Ui.Output(
-			"No changes. Infrastructure is up-to-date. This means that Terraform\n" +
-				"could not detect any differences between your configuration and\n" +
-				"the real physical resources that exist. As a result, Terraform\n" +
-				"doesn't need to do anything.")
-		return 0
-	}
-
 	if outPath != "" {
 		log.Printf("[INFO] Writing plan output to: %s", outPath)
 		f, err := os.Create(outPath)
@@ -114,6 +113,15 @@ func (c *PlanCommand) Run(args []string) int {
 			c.Ui.Error(fmt.Sprintf("Error writing plan file: %s", err))
 			return 1
 		}
+	}
+
+	if plan.Diff.Empty() {
+		c.Ui.Output(
+			"No changes. Infrastructure is up-to-date. This means that Terraform\n" +
+				"could not detect any differences between your configuration and\n" +
+				"the real physical resources that exist. As a result, Terraform\n" +
+				"doesn't need to do anything.")
+		return 0
 	}
 
 	if outPath == "" {
@@ -129,6 +137,13 @@ func (c *PlanCommand) Run(args []string) int {
 		Color:       c.Colorize(),
 		ModuleDepth: moduleDepth,
 	}))
+
+	c.Ui.Output(c.Colorize().Color(fmt.Sprintf(
+		"[reset][bold]Plan:[reset] "+
+			"%d to add, %d to change, %d to destroy.",
+		countHook.ToAdd+countHook.ToRemoveAndAdd,
+		countHook.ToChange,
+		countHook.ToRemove+countHook.ToRemoveAndAdd)))
 
 	if detailed {
 		return 2
@@ -166,12 +181,14 @@ Options:
 
   -module-depth=n     Specifies the depth of modules to show in the output.
                       This does not affect the plan itself, only the output
-                      shown. By default, this is zero. -1 will expand all.
+                      shown. By default, this is -1, which will expand all.
 
   -no-color           If specified, output won't contain any color.
 
   -out=path           Write a plan file to the given path. This can be used as
                       input to the "apply" command.
+
+  -parallelism=n      Limit the number of concurrent operations. Defaults to 10.
 
   -refresh=true       Update state prior to checking for differences.
 
@@ -189,7 +206,6 @@ Options:
   -var-file=foo       Set variables in the Terraform configuration from
                       a file. If "terraform.tfvars" is present, it will be
                       automatically loaded if this flag is not specified.
-
 `
 	return strings.TrimSpace(helpText)
 }
@@ -203,7 +219,7 @@ The Terraform execution plan has been generated and is shown below.
 Resources are shown in alphabetical order for quick scanning. Green resources
 will be created (or destroyed and then created if an existing resource
 exists), yellow resources are being changed in-place, and red resources
-will be destroyed.
+will be destroyed. Cyan entries are data sources to be read.
 
 Note: You didn't specify an "-out" parameter to save this plan, so when
 "apply" is called, Terraform can't guarantee this is what will execute.
@@ -214,7 +230,7 @@ The Terraform execution plan has been generated and is shown below.
 Resources are shown in alphabetical order for quick scanning. Green resources
 will be created (or destroyed and then created if an existing resource
 exists), yellow resources are being changed in-place, and red resources
-will be destroyed.
+will be destroyed. Cyan entries are data sources to be read.
 
 Your plan was also saved to the path below. Call the "apply" subcommand
 with this plan file and Terraform will exactly execute this execution

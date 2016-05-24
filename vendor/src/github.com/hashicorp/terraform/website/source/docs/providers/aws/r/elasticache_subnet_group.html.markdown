@@ -1,9 +1,9 @@
 ---
 layout: "aws"
-page_title: "AWS: aws_subnet"
+page_title: "AWS: aws_elasticache_subnet_group"
 sidebar_current: "docs-aws-resource-elasticache-subnet-group"
 description: |-
-  Provides an VPC subnet resource.
+  Provides an ElastiCache Subnet Group resource.
 ---
 
 # aws\_elasticache\_subnet\_group
@@ -35,7 +35,6 @@ resource "aws_subnet" "foo" {
 
 resource "aws_elasticache_subnet_group" "bar" {
     name = "tf-test-cache-subnet"
-    description = "tf-test-cache-subnet-group-descr"
     subnet_ids = ["${aws_subnet.foo.id}"]
 }
 ```
@@ -44,10 +43,9 @@ resource "aws_elasticache_subnet_group" "bar" {
 
 The following arguments are supported:
 
-* `description` – (Required) Description for the cache subnet group
-* `name` – (Required) Name for the cache subnet group. This value is stored as 
-a lowercase string
-* `subnet_ids` – (Optional) List of VPC Subnet IDs for the cache subnet group
+* `name` – (Required) Name for the cache subnet group. Elasticache converts this name to lowercase.
+* `description` – (Optional) Description for the cache subnet group. Defaults to "Managed by Terraform".
+* `subnet_ids` – (Required) List of VPC Subnet IDs for the cache subnet group
 
 ## Attributes Reference
 
