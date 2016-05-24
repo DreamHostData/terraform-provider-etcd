@@ -2,23 +2,79 @@
 	"version": 0,
 	"dependencies": [
 		{
-			"importpath": "github.com/hashicorp/terraform/helper/schema",
-			"repository": "https://github.com/hashicorp/terraform",
-			"revision": "2b9318651236807c29add41a9119c92f59bf58ba",
+			"importpath": "github.com/apparentlymart/go-cidr/cidr",
+			"repository": "https://github.com/apparentlymart/go-cidr",
+			"revision": "a3ebdb999b831ecb6ab8a226e31b07b2b9061c47",
 			"branch": "master",
-			"path": "/helper/schema"
+			"path": "/cidr"
 		},
 		{
-			"importpath": "github.com/hashicorp/terraform/helper/hashcode",
-			"repository": "https://github.com/hashicorp/terraform",
-			"revision": "2b9318651236807c29add41a9119c92f59bf58ba",
+			"importpath": "github.com/aws/aws-sdk-go/aws",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
 			"branch": "master",
-			"path": "/helper/hashcode"
+			"path": "/aws"
 		},
 		{
-			"importpath": "github.com/hashicorp/terraform",
-			"repository": "https://github.com/hashicorp/terraform",
-			"revision": "2b9318651236807c29add41a9119c92f59bf58ba",
+			"importpath": "github.com/aws/aws-sdk-go/private/endpoints",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
+			"branch": "master",
+			"path": "/private/endpoints"
+		},
+		{
+			"importpath": "github.com/aws/aws-sdk-go/private/protocol",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
+			"branch": "master",
+			"path": "/private/protocol"
+		},
+		{
+			"importpath": "github.com/aws/aws-sdk-go/private/signer/v4",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
+			"branch": "master",
+			"path": "/private/signer/v4"
+		},
+		{
+			"importpath": "github.com/aws/aws-sdk-go/private/waiter",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
+			"branch": "master",
+			"path": "/private/waiter"
+		},
+		{
+			"importpath": "github.com/aws/aws-sdk-go/service/s3",
+			"repository": "https://github.com/aws/aws-sdk-go",
+			"revision": "c76e8918e8f08490e3bb154178a84a0b2bdf8d6e",
+			"branch": "master",
+			"path": "/service/s3"
+		},
+		{
+			"importpath": "github.com/coreos/etcd/error",
+			"repository": "https://github.com/coreos/etcd",
+			"revision": "f86dc5c7f7296f438f9b17f2c5509b7c17df2469",
+			"branch": "master",
+			"path": "/error"
+		},
+		{
+			"importpath": "github.com/coreos/go-etcd/etcd",
+			"repository": "https://github.com/coreos/go-etcd",
+			"revision": "003851be7bb0694fe3cc457a49529a19388ee7cf",
+			"branch": "master",
+			"path": "/etcd"
+		},
+		{
+			"importpath": "github.com/davecgh/go-spew/spew",
+			"repository": "https://github.com/davecgh/go-spew",
+			"revision": "5215b55f46b2b919f50a1df0eaa5886afe4e3b3d",
+			"branch": "master",
+			"path": "/spew"
+		},
+		{
+			"importpath": "github.com/go-ini/ini",
+			"repository": "https://github.com/go-ini/ini",
+			"revision": "12f418cc7edc5a618a51407b7ac1f1f512139df3",
 			"branch": "master"
 		},
 		{
@@ -28,21 +84,95 @@
 			"branch": "master"
 		},
 		{
+			"importpath": "github.com/hashicorp/go-getter",
+			"repository": "https://github.com/hashicorp/go-getter",
+			"revision": "3142ddc1d627a166970ddd301bc09cb510c74edc",
+			"branch": "master"
+		},
+		{
 			"importpath": "github.com/hashicorp/go-multierror",
 			"repository": "https://github.com/hashicorp/go-multierror",
-			"revision": "56912fb08d85084aa318edcf2bba735b97cf35c5",
+			"revision": "d30f09973e19c1dfcd120b2d9c4f168e68d6b5d5",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/go-plugin",
+			"repository": "https://github.com/hashicorp/go-plugin",
+			"revision": "cccb4a1328abbb89898f3ecf4311a05bddc4de6d",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/go-uuid",
+			"repository": "https://github.com/hashicorp/go-uuid",
+			"revision": "73d19cdc2bf00788cc25f7d5fd74347d48ada9ac",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/go-version",
+			"repository": "https://github.com/hashicorp/go-version",
+			"revision": "0181db47023708a38c2d20d2fe25a5fa034d5743",
 			"branch": "master"
 		},
 		{
 			"importpath": "github.com/hashicorp/hcl",
 			"repository": "https://github.com/hashicorp/hcl",
-			"revision": "513e04c400ee2e81e97f5e011c08fb42c6f69b84",
+			"revision": "9a905a34e6280ce905da1a32344b25e81011197a",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/hil",
+			"repository": "https://github.com/hashicorp/hil",
+			"revision": "01dc167cd239b7ccab78a683b866536cd5904719",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/terraform",
+			"repository": "https://github.com/hashicorp/terraform",
+			"revision": "a764238d7dbb523e1518682dd3e6814ecceda0cf",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/hashicorp/terraform/helper/hashcode",
+			"repository": "https://github.com/hashicorp/terraform",
+			"revision": "a764238d7dbb523e1518682dd3e6814ecceda0cf",
+			"branch": "master",
+			"path": "/helper/hashcode"
+		},
+		{
+			"importpath": "github.com/hashicorp/terraform/helper/schema",
+			"repository": "https://github.com/hashicorp/terraform",
+			"revision": "a764238d7dbb523e1518682dd3e6814ecceda0cf",
+			"branch": "master",
+			"path": "/helper/schema"
+		},
+		{
+			"importpath": "github.com/hashicorp/yamux",
+			"repository": "https://github.com/hashicorp/yamux",
+			"revision": "172cde3b6ca5c154ff4e6e2ef96b7451332a9946",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/jmespath/go-jmespath",
+			"repository": "https://github.com/jmespath/go-jmespath",
+			"revision": "0b12d6b521d83fc7f755e7cfc1b1fbdd35a01a74",
 			"branch": "master"
 		},
 		{
 			"importpath": "github.com/mitchellh/copystructure",
 			"repository": "https://github.com/mitchellh/copystructure",
-			"revision": "6fc66267e9da7d155a9d3bd489e00dad02666dc6",
+			"revision": "80adcec1955ee4e97af357c30dee61aadcc02c10",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/mitchellh/go-homedir",
+			"repository": "https://github.com/mitchellh/go-homedir",
+			"revision": "981ab348d865cf048eb7d17e78ac7192632d8415",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/mitchellh/mapstructure",
+			"repository": "https://github.com/mitchellh/mapstructure",
+			"revision": "d2dd0262208475919e1a362f675cfc0e7c10e905",
 			"branch": "master"
 		},
 		{
@@ -52,43 +182,11 @@
 			"branch": "master"
 		},
 		{
-			"importpath": "github.com/mitchellh/go-homedir",
-			"repository": "https://github.com/mitchellh/go-homedir",
-			"revision": "1f6da4a72e57d4e7edd4a7295a585e0a3999a2d4",
-			"branch": "master"
-		},
-		{
-			"importpath": "github.com/mitchellh/mapstructure",
-			"repository": "https://github.com/mitchellh/mapstructure",
-			"revision": "bb4fbaf540ca2f7057d3adb5765784d24d9fd801",
-			"branch": "master"
-		},
-		{
-			"importpath": "github.com/hashicorp/yamux",
-			"repository": "https://github.com/hashicorp/yamux",
-			"revision": "b2e55852ddaf823a85c67f798080eb7d08acd71d",
-			"branch": "master"
-		},
-		{
-			"importpath": "github.com/coreos/go-etcd/etcd",
-			"repository": "https://github.com/coreos/go-etcd",
-			"revision": "4cceaf7283b76f27c4a732b20730dcdb61053bf5",
-			"branch": "master",
-			"path": "/etcd"
-		},
-		{
 			"importpath": "github.com/ugorji/go/codec",
 			"repository": "https://github.com/ugorji/go",
-			"revision": "821cda7e48749cacf7cad2c6ed01e96457ca7e9d",
+			"revision": "a396ed22fc049df733440d90efe17475e3929ccb",
 			"branch": "master",
 			"path": "/codec"
-		},
-		{
-			"importpath": "github.com/coreos/etcd/error",
-			"repository": "https://github.com/coreos/etcd",
-			"revision": "140378332656bdfd3a50859512a8141b05749e3a",
-			"branch": "master",
-			"path": "/error"
 		}
 	]
 }
